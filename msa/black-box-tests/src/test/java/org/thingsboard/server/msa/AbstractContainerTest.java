@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,11 +15,15 @@
  */
 package org.thingsboard.server.msa;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonMappingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableMap;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.cassandra.cql3.Json;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.http.config.Registry;
 import org.apache.http.config.RegistryBuilder;
@@ -32,19 +36,22 @@ import org.apache.http.impl.client.HttpClients;
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import org.apache.http.ssl.SSLContextBuilder;
 import org.apache.http.ssl.SSLContexts;
+import org.json.simple.JSONObject;
 import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.rules.TestRule;
 import org.junit.rules.TestWatcher;
 import org.junit.runner.Description;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
-import org.thingsboard.client.tools.RestClient;
+import org.thingsboard.rest.client.RestClient;
 import org.thingsboard.server.common.data.Device;
 import org.thingsboard.server.common.data.EntityType;
 import org.thingsboard.server.common.data.id.DeviceId;
+import org.thingsboard.server.common.data.security.DeviceCredentials;
 import org.thingsboard.server.msa.mapper.WsTelemetryResponse;
 
 
+import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSession;
 import javax.net.ssl.SSLSocket;
@@ -52,6 +59,7 @@ import java.net.URI;
 import java.security.cert.X509Certificate;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Random;
 
 @Slf4j
@@ -95,15 +103,29 @@ public abstract class AbstractContainerTest {
         }
     };
 
+    protected Device createGatewayDevice() throws JsonProcessingException {
+        String isGateway = "{\"gateway\":true}";
+        ObjectMapper objectMapper = new ObjectMapper();
+        JsonNode additionalInfo = objectMapper.readTree(isGateway);
+        Device gatewayDeviceTemplate = new Device();
+        gatewayDeviceTemplate.setName("mqtt_gateway");
+        gatewayDeviceTemplate.setType("gateway");
+        gatewayDeviceTemplate.setAdditionalInfo(additionalInfo);
+        return restClient.saveDevice(gatewayDeviceTemplate);
+    }
+
     protected Device createDevice(String name) {
-        return restClient.createDevice(name + RandomStringUtils.randomAlphanumeric(7), "DEFAULT");
+        Device device = new Device();
+        device.setName(name + RandomStringUtils.randomAlphanumeric(7));
+        device.setType("DEFAULT");
+        return restClient.saveDevice(device);
     }
 
     protected WsClient subscribeToWebSocket(DeviceId deviceId, String scope, CmdsType property) throws Exception {
         WsClient wsClient = new WsClient(new URI(WSS_URL + "/api/ws/plugins/telemetry?token=" + restClient.getToken()));
         SSLContextBuilder builder = SSLContexts.custom();
         builder.loadTrustMaterial(null, (TrustStrategy) (chain, authType) -> true);
-        wsClient.setSocket(builder.build().getSocketFactory().createSocket());
+        wsClient.setSocketFactory(builder.build().getSocketFactory());
         wsClient.connectBlocking();
 
         JsonObject cmdsObject = new JsonObject();
@@ -138,6 +160,27 @@ public abstract class AbstractContainerTest {
     protected boolean verify(WsTelemetryResponse wsTelemetryResponse, String key, String expectedValue) {
         List<Object> list = wsTelemetryResponse.getDataValuesByKey(key);
         return expectedValue.equals(list.get(1));
+    }
+
+    protected JsonObject createGatewayConnectPayload(String deviceName){
+        JsonObject payload = new JsonObject();
+        payload.addProperty("device", deviceName);
+        return payload;
+    }
+
+    protected JsonObject createGatewayPayload(String deviceName, long ts){
+        JsonObject payload = new JsonObject();
+        payload.add(deviceName, createGatewayTelemetryArray(ts));
+        return payload;
+    }
+
+    protected JsonArray createGatewayTelemetryArray(long ts){
+        JsonArray telemetryArray = new JsonArray();
+        if (ts > 0)
+            telemetryArray.add(createPayload(ts));
+        else
+            telemetryArray.add(createPayload());
+        return telemetryArray;
     }
 
     protected JsonObject createPayload(long ts) {
@@ -179,24 +222,7 @@ public abstract class AbstractContainerTest {
         SSLContextBuilder builder = SSLContexts.custom();
         builder.loadTrustMaterial(null, (TrustStrategy) (chain, authType) -> true);
         SSLContext sslContext = builder.build();
-        SSLConnectionSocketFactory sslSelfSigned = new SSLConnectionSocketFactory(sslContext, new X509HostnameVerifier() {
-            @Override
-            public void verify(String host, SSLSocket ssl) {
-            }
-
-            @Override
-            public void verify(String host, X509Certificate cert) {
-            }
-
-            @Override
-            public void verify(String host, String[] cns, String[] subjectAlts) {
-            }
-
-            @Override
-            public boolean verify(String s, SSLSession sslSession) {
-                return true;
-            }
-        });
+        SSLConnectionSocketFactory sslSelfSigned = new SSLConnectionSocketFactory(sslContext, (s, sslSession) -> true);
 
         Registry<ConnectionSocketFactory> socketFactoryRegistry = RegistryBuilder
                 .<ConnectionSocketFactory>create()

@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,17 +17,18 @@ package org.thingsboard.server.dao.customer;
 
 import org.thingsboard.server.common.data.Customer;
 import org.thingsboard.server.common.data.id.TenantId;
-import org.thingsboard.server.common.data.page.TextPageLink;
+import org.thingsboard.server.common.data.page.PageData;
+import org.thingsboard.server.common.data.page.PageLink;
 import org.thingsboard.server.dao.Dao;
+import org.thingsboard.server.dao.TenantEntityDao;
 
-import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
  * The Interface CustomerDao.
  */
-public interface CustomerDao extends Dao<Customer> {
+public interface CustomerDao extends Dao<Customer>, TenantEntityDao {
 
     /**
      * Save or update customer object
@@ -44,7 +45,7 @@ public interface CustomerDao extends Dao<Customer> {
      * @param pageLink the page link
      * @return the list of customer objects
      */
-    List<Customer> findCustomersByTenantId(UUID tenantId, TextPageLink pageLink);
+    PageData<Customer> findCustomersByTenantId(UUID tenantId, PageLink pageLink);
 
     /**
      * Find customers by tenantId and customer title.
@@ -54,5 +55,5 @@ public interface CustomerDao extends Dao<Customer> {
      * @return the optional customer object
      */
     Optional<Customer> findCustomersByTenantIdAndTitle(UUID tenantId, String title);
-    
+
 }

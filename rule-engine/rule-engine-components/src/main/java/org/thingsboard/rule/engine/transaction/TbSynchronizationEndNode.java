@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,43 +22,33 @@ import org.thingsboard.rule.engine.api.TbContext;
 import org.thingsboard.rule.engine.api.TbNode;
 import org.thingsboard.rule.engine.api.TbNodeConfiguration;
 import org.thingsboard.rule.engine.api.TbNodeException;
-import org.thingsboard.rule.engine.api.util.TbNodeUtils;
 import org.thingsboard.server.common.data.plugin.ComponentType;
 import org.thingsboard.server.common.msg.TbMsg;
-
-import java.util.concurrent.ExecutionException;
-
-import static org.thingsboard.rule.engine.api.TbRelationTypes.SUCCESS;
 
 @Slf4j
 @RuleNode(
         type = ComponentType.ACTION,
         name = "synchronization end",
         configClazz = EmptyNodeConfiguration.class,
-        nodeDescription = "Stops synchronization of message processing based on message originator",
+        nodeDescription = "This Node is now deprecated. Use \"Checkpoint\" instead.",
         nodeDetails = "",
         uiResources = {"static/rulenode/rulenode-core-config.js"},
         configDirective = ("tbNodeEmptyConfig")
 )
+@Deprecated
 public class TbSynchronizationEndNode implements TbNode {
-
-    private EmptyNodeConfiguration config;
 
     @Override
     public void init(TbContext ctx, TbNodeConfiguration configuration) throws TbNodeException {
-        this.config = TbNodeUtils.convert(configuration, EmptyNodeConfiguration.class);
     }
 
     @Override
     public void onMsg(TbContext ctx, TbMsg msg) {
-        ctx.getRuleChainTransactionService().endTransaction(msg,
-                successMsg -> ctx.tellNext(successMsg, SUCCESS),
-                throwable -> ctx.tellFailure(msg, throwable));
-        log.trace("Msg left transaction - [{}][{}]", msg.getId(), msg.getType());
+        log.warn("Synchronization Start/End nodes are deprecated since TB 2.5. Use queue with submit strategy SEQUENTIAL_BY_ORIGINATOR instead.");
+        ctx.tellSuccess(msg);
     }
 
     @Override
     public void destroy() {
-
     }
 }

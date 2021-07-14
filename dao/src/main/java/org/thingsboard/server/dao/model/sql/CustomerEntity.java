@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,14 +15,12 @@
  */
 package org.thingsboard.server.dao.model.sql;
 
-import com.datastax.driver.core.utils.UUIDs;
 import com.fasterxml.jackson.databind.JsonNode;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import org.hibernate.annotations.Type;
 import org.hibernate.annotations.TypeDef;
 import org.thingsboard.server.common.data.Customer;
-import org.thingsboard.server.common.data.UUIDConverter;
 import org.thingsboard.server.common.data.id.CustomerId;
 import org.thingsboard.server.common.data.id.TenantId;
 import org.thingsboard.server.dao.model.BaseSqlEntity;
@@ -33,6 +31,7 @@ import org.thingsboard.server.dao.util.mapping.JsonStringType;
 import javax.persistence.Column;
 import javax.persistence.Entity;
 import javax.persistence.Table;
+import java.util.UUID;
 
 @Data
 @EqualsAndHashCode(callSuper = true)
@@ -42,7 +41,7 @@ import javax.persistence.Table;
 public final class CustomerEntity extends BaseSqlEntity<Customer> implements SearchTextEntity<Customer> {
 
     @Column(name = ModelConstants.CUSTOMER_TENANT_ID_PROPERTY)
-    private String tenantId;
+    private UUID tenantId;
     
     @Column(name = ModelConstants.CUSTOMER_TITLE_PROPERTY)
     private String title;
@@ -84,9 +83,10 @@ public final class CustomerEntity extends BaseSqlEntity<Customer> implements Sea
 
     public CustomerEntity(Customer customer) {
         if (customer.getId() != null) {
-            this.setId(customer.getId().getId());
+            this.setUuid(customer.getId().getId());
         }
-        this.tenantId = UUIDConverter.fromTimeUUID(customer.getTenantId().getId());
+        this.setCreatedTime(customer.getCreatedTime());
+        this.tenantId = customer.getTenantId().getId();
         this.title = customer.getTitle();
         this.country = customer.getCountry();
         this.state = customer.getState();
@@ -111,9 +111,9 @@ public final class CustomerEntity extends BaseSqlEntity<Customer> implements Sea
 
     @Override
     public Customer toData() {
-        Customer customer = new Customer(new CustomerId(getId()));
-        customer.setCreatedTime(UUIDs.unixTimestamp(getId()));
-        customer.setTenantId(new TenantId(UUIDConverter.fromString(tenantId)));
+        Customer customer = new Customer(new CustomerId(this.getUuid()));
+        customer.setCreatedTime(createdTime);
+        customer.setTenantId(new TenantId(tenantId));
         customer.setTitle(title);
         customer.setCountry(country);
         customer.setState(state);
@@ -126,4 +126,5 @@ public final class CustomerEntity extends BaseSqlEntity<Customer> implements Sea
         customer.setAdditionalInfo(additionalInfo);
         return customer;
     }
+
 }

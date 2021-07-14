@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import org.thingsboard.server.common.msg.TbActorMsg;
 import org.thingsboard.server.common.msg.aware.DeviceAwareMsg;
 import org.thingsboard.server.common.msg.aware.TenantAwareMsg;
 import org.thingsboard.server.gen.transport.TransportProtos.TransportToDeviceActorMsg;
+import org.thingsboard.server.common.msg.queue.TbCallback;
 
 import java.io.Serializable;
 import java.util.UUID;
@@ -33,12 +34,16 @@ import java.util.UUID;
 @Data
 public class TransportToDeviceActorMsgWrapper implements TbActorMsg, DeviceAwareMsg, TenantAwareMsg, Serializable {
 
+    private static final long serialVersionUID = 7191333353202935941L;
+
     private final TenantId tenantId;
     private final DeviceId deviceId;
     private final TransportToDeviceActorMsg msg;
+    private final TbCallback callback;
 
-    public TransportToDeviceActorMsgWrapper(TransportToDeviceActorMsg msg) {
+    public TransportToDeviceActorMsgWrapper(TransportToDeviceActorMsg msg, TbCallback callback) {
         this.msg = msg;
+        this.callback = callback;
         this.tenantId = new TenantId(new UUID(msg.getSessionInfo().getTenantIdMSB(), msg.getSessionInfo().getTenantIdLSB()));
         this.deviceId = new DeviceId(new UUID(msg.getSessionInfo().getDeviceIdMSB(), msg.getSessionInfo().getDeviceIdLSB()));
     }

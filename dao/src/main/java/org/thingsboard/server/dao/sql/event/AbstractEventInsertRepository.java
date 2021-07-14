@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,6 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.DefaultTransactionDefinition;
-import org.thingsboard.server.common.data.UUIDConverter;
 import org.thingsboard.server.dao.model.sql.EventEntity;
 
 import javax.persistence.EntityManager;
@@ -52,11 +51,11 @@ public abstract class AbstractEventInsertRepository implements EventInsertReposi
                 TransactionStatus transaction = getTransactionStatus(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
                 try {
                     eventEntity = processSaveOrUpdate(entity, insertOrUpdateOnUniqueKeyConflict);
+                    transactionManager.commit(transaction);
                 } catch (Throwable th) {
                     log.trace("Could not execute the update statement for Entity with entityId {} and entityType {}", entity.getEventUid(), entity.getEventType());
                     transactionManager.rollback(transaction);
                 }
-                transactionManager.commit(transaction);
             } else {
                 log.trace("Could not execute the insert statement for Entity with entityId {} and entityType {}", entity.getEventUid(), entity.getEventType());
             }
@@ -69,13 +68,15 @@ public abstract class AbstractEventInsertRepository implements EventInsertReposi
 
     protected Query getQuery(EventEntity entity, String query) {
         return entityManager.createNativeQuery(query, EventEntity.class)
-                .setParameter("id", UUIDConverter.fromTimeUUID(entity.getId()))
+                .setParameter("id", entity.getUuid())
+                .setParameter("created_time", entity.getCreatedTime())
                 .setParameter("body", entity.getBody().toString())
                 .setParameter("entity_id", entity.getEntityId())
                 .setParameter("entity_type", entity.getEntityType().name())
                 .setParameter("event_type", entity.getEventType())
                 .setParameter("event_uid", entity.getEventUid())
-                .setParameter("tenant_id", entity.getTenantId());
+                .setParameter("tenant_id", entity.getTenantId())
+                .setParameter("ts", entity.getTs());
     }
 
     private EventEntity processSaveOrUpdate(EventEntity entity, String query) {

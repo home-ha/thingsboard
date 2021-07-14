@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,6 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.DefaultTransactionDefinition;
-import org.thingsboard.server.common.data.UUIDConverter;
 import org.thingsboard.server.dao.model.sql.ComponentDescriptorEntity;
 
 import javax.persistence.EntityManager;
@@ -48,17 +47,17 @@ public abstract class AbstractComponentDescriptorInsertRepository implements Com
         } catch (Throwable throwable) {
             transactionManager.rollback(insertTransaction);
             if (throwable.getCause() instanceof ConstraintViolationException) {
-                log.trace("Insert request leaded in a violation of a defined integrity constraint {} for Component Descriptor with id {}, name {} and entityType {}", throwable.getMessage(), entity.getId(), entity.getName(), entity.getType());
+                log.trace("Insert request leaded in a violation of a defined integrity constraint {} for Component Descriptor with id {}, name {} and entityType {}", throwable.getMessage(), entity.getUuid(), entity.getName(), entity.getType());
                 TransactionStatus transaction = getTransactionStatus(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
                 try {
                     componentDescriptorEntity = processSaveOrUpdate(entity, insertOrUpdateOnUniqueKeyConflict);
+                    transactionManager.commit(transaction);
                 } catch (Throwable th) {
-                    log.trace("Could not execute the update statement for Component Descriptor with id {}, name {} and entityType {}", entity.getId(), entity.getName(), entity.getType());
+                    log.trace("Could not execute the update statement for Component Descriptor with id {}, name {} and entityType {}", entity.getUuid(), entity.getName(), entity.getType());
                     transactionManager.rollback(transaction);
                 }
-                transactionManager.commit(transaction);
             } else {
-                log.trace("Could not execute the insert statement for Component Descriptor with id {}, name {} and entityType {}", entity.getId(), entity.getName(), entity.getType());
+                log.trace("Could not execute the insert statement for Component Descriptor with id {}, name {} and entityType {}", entity.getUuid(), entity.getName(), entity.getType());
             }
         }
         return componentDescriptorEntity;
@@ -69,7 +68,8 @@ public abstract class AbstractComponentDescriptorInsertRepository implements Com
 
     protected Query getQuery(ComponentDescriptorEntity entity, String query) {
         return entityManager.createNativeQuery(query, ComponentDescriptorEntity.class)
-                .setParameter("id", UUIDConverter.fromTimeUUID(entity.getId()))
+                .setParameter("id", entity.getUuid())
+                .setParameter("created_time", entity.getCreatedTime())
                 .setParameter("actions", entity.getActions())
                 .setParameter("clazz", entity.getClazz())
                 .setParameter("configuration_descriptor", entity.getConfigurationDescriptor().toString())

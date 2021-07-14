@@ -1,5 +1,5 @@
 #
-# Copyright © 2016-2019 The Thingsboard Authors
+# Copyright © 2016-2021 The Thingsboard Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 
-FROM thingsboard/openjdk8
+FROM thingsboard/openjdk11
 
 COPY logback.xml ${pkg.name}.conf start-db.sh stop-db.sh start-tb.sh upgrade-tb.sh install-tb.sh ${pkg.name}.deb /tmp/
 
@@ -26,6 +26,7 @@ RUN chmod a+x /tmp/*.sh \
     && mv /tmp/stop-db.sh /usr/bin
 
 RUN dpkg -i /tmp/${pkg.name}.deb
+RUN rm /tmp/${pkg.name}.deb
 
 RUN systemctl --no-reload disable --now ${pkg.name}.service > /dev/null 2>&1 || :
 
@@ -36,7 +37,6 @@ ENV DATA_FOLDER=/data
 
 ENV HTTP_BIND_PORT=9090
 ENV DATABASE_TS_TYPE=sql
-ENV DATABASE_ENTITIES_TYPE=sql
 
 ENV SPRING_JPA_DATABASE_PLATFORM=org.hibernate.dialect.HSQLDialect
 ENV SPRING_DRIVER_CLASS_NAME=org.hsqldb.jdbc.JDBCDriver
@@ -44,9 +44,17 @@ ENV SPRING_DATASOURCE_URL=jdbc:hsqldb:file:/data/db/thingsboardDb;sql.enforce_si
 ENV SPRING_DATASOURCE_USERNAME=sa
 ENV SPRING_DATASOURCE_PASSWORD=
 
+RUN mkdir -p /data
+RUN chown -R ${pkg.user}:${pkg.user} /data
+
+RUN chmod 555 ${pkg.installFolder}/bin/${pkg.name}.jar
+
+USER ${pkg.user}
+
 EXPOSE 9090
 EXPOSE 1883
 EXPOSE 5683/udp
+EXPOSE 5685/udp
 
 VOLUME ["/data"]
 

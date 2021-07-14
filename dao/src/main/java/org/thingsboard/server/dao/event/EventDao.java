@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,10 @@ package org.thingsboard.server.dao.event;
 
 import com.google.common.util.concurrent.ListenableFuture;
 import org.thingsboard.server.common.data.Event;
+import org.thingsboard.server.common.data.event.EventFilter;
 import org.thingsboard.server.common.data.id.EntityId;
 import org.thingsboard.server.common.data.id.TenantId;
+import org.thingsboard.server.common.data.page.PageData;
 import org.thingsboard.server.common.data.page.TimePageLink;
 import org.thingsboard.server.dao.Dao;
 
@@ -74,7 +76,7 @@ public interface EventDao extends Dao<Event> {
      * @param pageLink the pageLink
      * @return the event list
      */
-    List<Event> findEvents(UUID tenantId, EntityId entityId, TimePageLink pageLink);
+    PageData<Event> findEvents(UUID tenantId, EntityId entityId, TimePageLink pageLink);
 
     /**
      * Find events by tenantId, entityId, eventType and pageLink.
@@ -85,7 +87,9 @@ public interface EventDao extends Dao<Event> {
      * @param pageLink the pageLink
      * @return the event list
      */
-    List<Event> findEvents(UUID tenantId, EntityId entityId, String eventType, TimePageLink pageLink);
+    PageData<Event> findEvents(UUID tenantId, EntityId entityId, String eventType, TimePageLink pageLink);
+
+    PageData<Event> findEventByFilter(UUID tenantId, EntityId entityId, EventFilter eventFilter, TimePageLink pageLink);
 
     /**
      * Find latest events by tenantId, entityId and eventType.
@@ -98,4 +102,10 @@ public interface EventDao extends Dao<Event> {
      */
     List<Event> findLatestEvents(UUID tenantId, EntityId entityId, String eventType, int limit);
 
+    /**
+     * Executes stored procedure to cleanup old events. Uses separate ttl for debug and other events.
+     * @param otherEventsTtl the ttl for events in seconds
+     * @param debugEventsTtl the ttl for debug events in seconds
+     */
+    void cleanupEvents(long otherEventsTtl, long debugEventsTtl);
 }

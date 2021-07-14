@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,10 +18,19 @@ package org.thingsboard.server.service.script;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import lombok.extern.slf4j.Slf4j;
+import org.thingsboard.common.util.ThingsBoardThreadFactory;
+import org.thingsboard.server.common.data.ApiUsageRecordKey;
+import org.thingsboard.server.common.data.id.CustomerId;
+import org.thingsboard.server.common.data.id.TenantId;
+import org.thingsboard.server.queue.usagestats.TbApiUsageClient;
+import org.thingsboard.server.service.apiusage.TbApiUsageStateService;
 
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -30,28 +39,59 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Slf4j
 public abstract class AbstractJsInvokeService implements JsInvokeService {
 
+    private final TbApiUsageStateService apiUsageStateService;
+    private final TbApiUsageClient apiUsageClient;
+    protected ScheduledExecutorService timeoutExecutorService;
     protected Map<UUID, String> scriptIdToNameMap = new ConcurrentHashMap<>();
-    protected Map<UUID, AtomicInteger> blackListedFunctions = new ConcurrentHashMap<>();
+    protected Map<UUID, DisableListInfo> disabledFunctions = new ConcurrentHashMap<>();
 
-    @Override
-    public ListenableFuture<UUID> eval(JsScriptType scriptType, String scriptBody, String... argNames) {
-        UUID scriptId = UUID.randomUUID();
-        String functionName = "invokeInternal_" + scriptId.toString().replace('-', '_');
-        String jsScript = generateJsScript(scriptType, functionName, scriptBody, argNames);
-        return doEval(scriptId, functionName, jsScript);
+    protected AbstractJsInvokeService(TbApiUsageStateService apiUsageStateService, TbApiUsageClient apiUsageClient) {
+        this.apiUsageStateService = apiUsageStateService;
+        this.apiUsageClient = apiUsageClient;
+    }
+
+    public void init(long maxRequestsTimeout) {
+        if (maxRequestsTimeout > 0) {
+            timeoutExecutorService = Executors.newSingleThreadScheduledExecutor(ThingsBoardThreadFactory.forName("nashorn-js-timeout"));
+        }
+    }
+
+    public void stop() {
+        if (timeoutExecutorService != null) {
+            timeoutExecutorService.shutdownNow();
+        }
     }
 
     @Override
-    public ListenableFuture<Object> invokeFunction(UUID scriptId, Object... args) {
-        String functionName = scriptIdToNameMap.get(scriptId);
-        if (functionName == null) {
-            return Futures.immediateFailedFuture(new RuntimeException("No compiled script found for scriptId: [" + scriptId + "]!"));
-        }
-        if (!isBlackListed(scriptId)) {
-            return doInvokeFunction(scriptId, functionName, args);
+    public ListenableFuture<UUID> eval(TenantId tenantId, JsScriptType scriptType, String scriptBody, String... argNames) {
+        if (apiUsageStateService.getApiUsageState(tenantId).isJsExecEnabled()) {
+            UUID scriptId = UUID.randomUUID();
+            String functionName = "invokeInternal_" + scriptId.toString().replace('-', '_');
+            String jsScript = generateJsScript(scriptType, functionName, scriptBody, argNames);
+            return doEval(scriptId, functionName, jsScript);
         } else {
-            return Futures.immediateFailedFuture(
-                    new RuntimeException("Script is blacklisted due to maximum error count " + getMaxErrors() + "!"));
+            return Futures.immediateFailedFuture(new RuntimeException("JS Execution is disabled due to API limits!"));
+        }
+    }
+
+    @Override
+    public ListenableFuture<Object> invokeFunction(TenantId tenantId, CustomerId customerId, UUID scriptId, Object... args) {
+        if (apiUsageStateService.getApiUsageState(tenantId).isJsExecEnabled()) {
+            String functionName = scriptIdToNameMap.get(scriptId);
+            if (functionName == null) {
+                return Futures.immediateFailedFuture(new RuntimeException("No compiled script found for scriptId: [" + scriptId + "]!"));
+            }
+            if (!isDisabled(scriptId)) {
+                apiUsageClient.report(tenantId, customerId, ApiUsageRecordKey.JS_EXEC_COUNT, 1);
+                return doInvokeFunction(scriptId, functionName, args);
+            } else {
+                String message = "Script invocation is blocked due to maximum error count "
+                        + getMaxErrors() + ", scriptId " + scriptId + "!";
+                log.warn(message);
+                return Futures.immediateFailedFuture(new RuntimeException(message));
+            }
+        } else {
+            return Futures.immediateFailedFuture(new RuntimeException("JS Execution is disabled due to API limits!"));
         }
     }
 
@@ -61,7 +101,7 @@ public abstract class AbstractJsInvokeService implements JsInvokeService {
         if (functionName != null) {
             try {
                 scriptIdToNameMap.remove(scriptId);
-                blackListedFunctions.remove(scriptId);
+                disabledFunctions.remove(scriptId);
                 doRelease(scriptId, functionName);
             } catch (Exception e) {
                 return Futures.immediateFailedFuture(e);
@@ -78,25 +118,56 @@ public abstract class AbstractJsInvokeService implements JsInvokeService {
 
     protected abstract int getMaxErrors();
 
-    protected void onScriptExecutionError(UUID scriptId) {
-        blackListedFunctions.computeIfAbsent(scriptId, key -> new AtomicInteger(0)).incrementAndGet();
+    protected abstract long getMaxBlacklistDuration();
+
+    protected void onScriptExecutionError(UUID scriptId, Throwable t, String scriptBody) {
+        DisableListInfo disableListInfo = disabledFunctions.computeIfAbsent(scriptId, key -> new DisableListInfo());
+        log.warn("Script has exception and will increment counter {} on disabledFunctions for id {}, exception {}, cause {}, scriptBody {}",
+                disableListInfo.get(), scriptId, t, t.getCause(), scriptBody);
+        disableListInfo.incrementAndGet();
     }
 
     private String generateJsScript(JsScriptType scriptType, String functionName, String scriptBody, String... argNames) {
-        switch (scriptType) {
-            case RULE_NODE_SCRIPT:
-                return RuleNodeScriptFactory.generateRuleNodeScript(functionName, scriptBody, argNames);
-            default:
-                throw new RuntimeException("No script factory implemented for scriptType: " + scriptType);
+        if (scriptType == JsScriptType.RULE_NODE_SCRIPT) {
+            return RuleNodeScriptFactory.generateRuleNodeScript(functionName, scriptBody, argNames);
+        }
+        throw new RuntimeException("No script factory implemented for scriptType: " + scriptType);
+    }
+
+    private boolean isDisabled(UUID scriptId) {
+        DisableListInfo errorCount = disabledFunctions.get(scriptId);
+        if (errorCount != null) {
+            if (errorCount.getExpirationTime() <= System.currentTimeMillis()) {
+                disabledFunctions.remove(scriptId);
+                return false;
+            } else {
+                return errorCount.get() >= getMaxErrors();
+            }
+        } else {
+            return false;
         }
     }
 
-    private boolean isBlackListed(UUID scriptId) {
-        if (blackListedFunctions.containsKey(scriptId)) {
-            AtomicInteger errorCount = blackListedFunctions.get(scriptId);
-            return errorCount.get() >= getMaxErrors();
-        } else {
-            return false;
+    private class DisableListInfo {
+        private final AtomicInteger counter;
+        private long expirationTime;
+
+        private DisableListInfo() {
+            this.counter = new AtomicInteger(0);
+        }
+
+        public int get() {
+            return counter.get();
+        }
+
+        public int incrementAndGet() {
+            int result = counter.incrementAndGet();
+            expirationTime = System.currentTimeMillis() + getMaxBlacklistDuration();
+            return result;
+        }
+
+        public long getExpirationTime() {
+            return expirationTime;
         }
     }
 }

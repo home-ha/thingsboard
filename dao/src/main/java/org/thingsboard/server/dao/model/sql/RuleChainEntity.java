@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,17 +15,16 @@
  */
 package org.thingsboard.server.dao.model.sql;
 
-import com.datastax.driver.core.utils.UUIDs;
 import com.fasterxml.jackson.databind.JsonNode;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import org.hibernate.annotations.Type;
 import org.hibernate.annotations.TypeDef;
-import org.thingsboard.server.common.data.UUIDConverter;
 import org.thingsboard.server.common.data.id.RuleChainId;
 import org.thingsboard.server.common.data.id.RuleNodeId;
 import org.thingsboard.server.common.data.id.TenantId;
 import org.thingsboard.server.common.data.rule.RuleChain;
+import org.thingsboard.server.common.data.rule.RuleChainType;
 import org.thingsboard.server.dao.DaoUtil;
 import org.thingsboard.server.dao.model.BaseSqlEntity;
 import org.thingsboard.server.dao.model.ModelConstants;
@@ -34,7 +33,10 @@ import org.thingsboard.server.dao.util.mapping.JsonStringType;
 
 import javax.persistence.Column;
 import javax.persistence.Entity;
+import javax.persistence.EnumType;
+import javax.persistence.Enumerated;
 import javax.persistence.Table;
+import java.util.UUID;
 
 @Data
 @EqualsAndHashCode(callSuper = true)
@@ -44,16 +46,20 @@ import javax.persistence.Table;
 public class RuleChainEntity extends BaseSqlEntity<RuleChain> implements SearchTextEntity<RuleChain> {
 
     @Column(name = ModelConstants.RULE_CHAIN_TENANT_ID_PROPERTY)
-    private String tenantId;
+    private UUID tenantId;
 
     @Column(name = ModelConstants.RULE_CHAIN_NAME_PROPERTY)
     private String name;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = ModelConstants.RULE_CHAIN_TYPE_PROPERTY)
+    private RuleChainType type;
 
     @Column(name = ModelConstants.SEARCH_TEXT_PROPERTY)
     private String searchText;
 
     @Column(name = ModelConstants.RULE_CHAIN_FIRST_RULE_NODE_ID_PROPERTY)
-    private String firstRuleNodeId;
+    private UUID firstRuleNodeId;
 
     @Column(name = ModelConstants.RULE_CHAIN_ROOT_PROPERTY)
     private boolean root;
@@ -74,13 +80,15 @@ public class RuleChainEntity extends BaseSqlEntity<RuleChain> implements SearchT
 
     public RuleChainEntity(RuleChain ruleChain) {
         if (ruleChain.getId() != null) {
-            this.setId(ruleChain.getUuidId());
+            this.setUuid(ruleChain.getUuidId());
         }
-        this.tenantId = toString(DaoUtil.getId(ruleChain.getTenantId()));
+        this.setCreatedTime(ruleChain.getCreatedTime());
+        this.tenantId = DaoUtil.getId(ruleChain.getTenantId());
         this.name = ruleChain.getName();
+        this.type = ruleChain.getType();
         this.searchText = ruleChain.getName();
         if (ruleChain.getFirstRuleNodeId() != null) {
-            this.firstRuleNodeId = UUIDConverter.fromTimeUUID(ruleChain.getFirstRuleNodeId().getId());
+            this.firstRuleNodeId = ruleChain.getFirstRuleNodeId().getId();
         }
         this.root = ruleChain.isRoot();
         this.debugMode = ruleChain.isDebugMode();
@@ -100,12 +108,13 @@ public class RuleChainEntity extends BaseSqlEntity<RuleChain> implements SearchT
 
     @Override
     public RuleChain toData() {
-        RuleChain ruleChain = new RuleChain(new RuleChainId(getId()));
-        ruleChain.setCreatedTime(UUIDs.unixTimestamp(getId()));
-        ruleChain.setTenantId(new TenantId(toUUID(tenantId)));
+        RuleChain ruleChain = new RuleChain(new RuleChainId(this.getUuid()));
+        ruleChain.setCreatedTime(createdTime);
+        ruleChain.setTenantId(new TenantId(tenantId));
         ruleChain.setName(name);
+        ruleChain.setType(type);
         if (firstRuleNodeId != null) {
-            ruleChain.setFirstRuleNodeId(new RuleNodeId(UUIDConverter.fromString(firstRuleNodeId)));
+            ruleChain.setFirstRuleNodeId(new RuleNodeId(firstRuleNodeId));
         }
         ruleChain.setRoot(root);
         ruleChain.setDebugMode(debugMode);

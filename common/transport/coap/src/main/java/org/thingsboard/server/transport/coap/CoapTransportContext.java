@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,30 +22,36 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 import org.thingsboard.server.common.transport.TransportContext;
-import org.thingsboard.server.transport.coap.adaptors.CoapTransportAdaptor;
+import org.thingsboard.server.gen.transport.TransportProtos;
+import org.thingsboard.server.transport.coap.adaptors.JsonCoapAdaptor;
+import org.thingsboard.server.transport.coap.adaptors.ProtoCoapAdaptor;
+import org.thingsboard.server.transport.coap.efento.adaptor.EfentoCoapAdaptor;
+
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+
 
 /**
  * Created by ashvayka on 18.10.18.
  */
 @Slf4j
-@ConditionalOnExpression("'${transport.type:null}'=='null' || ('${transport.type}'=='local' && '${transport.coap.enabled}'=='true')")
+@ConditionalOnExpression("'${service.type:null}'=='tb-transport' || ('${service.type:null}'=='monolith' && '${transport.api_enabled:true}'=='true' && '${transport.coap.enabled}'=='true')")
 @Component
+@Getter
 public class CoapTransportContext extends TransportContext {
 
-    @Getter
-    @Value("${transport.coap.bind_address}")
-    private String host;
+    @Value("${transport.sessions.report_timeout}")
+    private long sessionReportTimeout;
 
-    @Getter
-    @Value("${transport.coap.bind_port}")
-    private Integer port;
-
-    @Getter
-    @Value("${transport.coap.timeout}")
-    private Long timeout;
-
-    @Getter
     @Autowired
-    private CoapTransportAdaptor adaptor;
+    private JsonCoapAdaptor jsonCoapAdaptor;
+
+    @Autowired
+    private ProtoCoapAdaptor protoCoapAdaptor;
+
+    @Autowired
+    private EfentoCoapAdaptor efentoCoapAdaptor;
+
+    private final ConcurrentMap<Integer, TransportProtos.ToDeviceRpcRequestMsg> rpcAwaitingAck = new ConcurrentHashMap<>();
 
 }

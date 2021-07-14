@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,8 @@ package org.thingsboard.server.dao.sql;
 import lombok.Builder;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
+import org.thingsboard.server.common.stats.MessagesStats;
+import org.thingsboard.server.common.stats.StatsFactory;
 
 @Slf4j
 @Data
@@ -28,4 +30,6 @@ public class TbSqlBlockingQueueParams {
     private final int batchSize;
     private final long maxDelay;
     private final long statsPrintIntervalMs;
+    private final String statsNamePrefix;
+    private final boolean batchSortEnabled;
 }

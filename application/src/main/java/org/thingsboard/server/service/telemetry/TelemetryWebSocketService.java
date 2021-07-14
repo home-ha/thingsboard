@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,9 @@
  */
 package org.thingsboard.server.service.telemetry;
 
-import org.thingsboard.server.service.telemetry.sub.SubscriptionUpdate;
+import org.thingsboard.server.service.telemetry.cmd.v2.CmdUpdate;
+import org.thingsboard.server.service.telemetry.cmd.v2.DataUpdate;
+import org.thingsboard.server.service.telemetry.sub.TelemetrySubscriptionUpdate;
 
 /**
  * Created by ashvayka on 27.03.18.
@@ -26,5 +28,8 @@ public interface TelemetryWebSocketService {
 
     void handleWebSocketMsg(TelemetryWebSocketSessionRef sessionRef, String msg);
 
-    void sendWsMsg(String sessionId, SubscriptionUpdate update);
+    void sendWsMsg(String sessionId, TelemetrySubscriptionUpdate update);
+
+    void sendWsMsg(String sessionId, CmdUpdate update);
+
 }

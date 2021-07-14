@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,16 +15,19 @@
  */
 package org.thingsboard.rule.engine.action;
 
-import com.datastax.driver.core.utils.UUIDs;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import lombok.extern.slf4j.Slf4j;
-import org.thingsboard.rule.engine.api.*;
+import org.thingsboard.rule.engine.api.RuleNode;
+import org.thingsboard.rule.engine.api.TbContext;
+import org.thingsboard.rule.engine.api.TbNode;
+import org.thingsboard.rule.engine.api.TbNodeConfiguration;
+import org.thingsboard.rule.engine.api.TbNodeException;
 import org.thingsboard.rule.engine.api.util.TbNodeUtils;
 import org.thingsboard.server.common.data.plugin.ComponentType;
 import org.thingsboard.server.common.msg.TbMsg;
-import org.thingsboard.server.common.msg.TbMsgDataType;
 import org.thingsboard.server.common.msg.TbMsgMetaData;
+import org.thingsboard.server.common.msg.queue.ServiceQueue;
 import org.thingsboard.server.common.msg.session.SessionMsgType;
 
 import java.util.UUID;
@@ -60,7 +63,7 @@ public class TbMsgCountNode implements TbNode {
         TbMsgCountNodeConfiguration config = TbNodeUtils.convert(configuration, TbMsgCountNodeConfiguration.class);
         this.delay = TimeUnit.SECONDS.toMillis(config.getInterval());
         this.telemetryPrefix = config.getTelemetryPrefix();
-        scheduleTickMsg(ctx);
+        scheduleTickMsg(ctx, null);
 
     }
 
@@ -68,29 +71,30 @@ public class TbMsgCountNode implements TbNode {
     public void onMsg(TbContext ctx, TbMsg msg) {
         if (msg.getType().equals(TB_MSG_COUNT_NODE_MSG) && msg.getId().equals(nextTickId)) {
             JsonObject telemetryJson = new JsonObject();
-            telemetryJson.addProperty(this.telemetryPrefix + "_" + ctx.getNodeId(), messagesProcessed.longValue());
+            telemetryJson.addProperty(this.telemetryPrefix + "_" + ctx.getServiceId(), messagesProcessed.longValue());
 
             messagesProcessed = new AtomicLong(0);
 
             TbMsgMetaData metaData = new TbMsgMetaData();
             metaData.putValue("delta", Long.toString(System.currentTimeMillis() - lastScheduledTs + delay));
 
-            TbMsg tbMsg = new TbMsg(UUIDs.timeBased(), SessionMsgType.POST_TELEMETRY_REQUEST.name(), ctx.getTenantId(), metaData, TbMsgDataType.JSON, gson.toJson(telemetryJson), null, null, 0L);
-            ctx.tellNext(tbMsg, SUCCESS);
-            scheduleTickMsg(ctx);
+            TbMsg tbMsg = TbMsg.newMsg(msg.getQueueName(), SessionMsgType.POST_TELEMETRY_REQUEST.name(), ctx.getTenantId(), msg.getCustomerId(), metaData, gson.toJson(telemetryJson));
+            ctx.enqueueForTellNext(tbMsg, SUCCESS);
+            scheduleTickMsg(ctx, tbMsg);
         } else {
             messagesProcessed.incrementAndGet();
+            ctx.ack(msg);
         }
     }
 
-    private void scheduleTickMsg(TbContext ctx) {
+    private void scheduleTickMsg(TbContext ctx, TbMsg msg) {
         long curTs = System.currentTimeMillis();
         if (lastScheduledTs == 0L) {
             lastScheduledTs = curTs;
         }
         lastScheduledTs = lastScheduledTs + delay;
         long curDelay = Math.max(0L, (lastScheduledTs - curTs));
-        TbMsg tickMsg = ctx.newMsg(TB_MSG_COUNT_NODE_MSG, ctx.getSelfId(), new TbMsgMetaData(), "");
+        TbMsg tickMsg = ctx.newMsg(ServiceQueue.MAIN, TB_MSG_COUNT_NODE_MSG, ctx.getSelfId(), msg != null ? msg.getCustomerId() : null, new TbMsgMetaData(), "");
         nextTickId = tickMsg.getId();
         ctx.tellSelf(tickMsg, curDelay);
     }

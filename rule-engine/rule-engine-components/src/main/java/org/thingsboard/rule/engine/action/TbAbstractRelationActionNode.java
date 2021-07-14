@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,11 +35,13 @@ import org.thingsboard.server.common.data.DashboardInfo;
 import org.thingsboard.server.common.data.Device;
 import org.thingsboard.server.common.data.EntityType;
 import org.thingsboard.server.common.data.EntityView;
+import org.thingsboard.server.common.data.User;
 import org.thingsboard.server.common.data.asset.Asset;
+import org.thingsboard.server.common.data.edge.Edge;
 import org.thingsboard.server.common.data.id.EntityId;
 import org.thingsboard.server.common.data.id.EntityIdFactory;
-import org.thingsboard.server.common.data.page.TextPageData;
-import org.thingsboard.server.common.data.page.TextPageLink;
+import org.thingsboard.server.common.data.page.PageData;
+import org.thingsboard.server.common.data.page.PageLink;
 import org.thingsboard.server.common.data.relation.EntityRelation;
 import org.thingsboard.server.common.data.relation.EntitySearchDirection;
 import org.thingsboard.server.common.data.relation.RelationTypeGroup;
@@ -48,15 +50,17 @@ import org.thingsboard.server.dao.asset.AssetService;
 import org.thingsboard.server.dao.customer.CustomerService;
 import org.thingsboard.server.dao.dashboard.DashboardService;
 import org.thingsboard.server.dao.device.DeviceService;
+import org.thingsboard.server.dao.edge.EdgeService;
 import org.thingsboard.server.dao.entityview.EntityViewService;
+import org.thingsboard.server.dao.user.UserService;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
+import static org.thingsboard.common.util.DonAsynchron.withCallback;
 import static org.thingsboard.rule.engine.api.TbRelationTypes.FAILURE;
 import static org.thingsboard.rule.engine.api.TbRelationTypes.SUCCESS;
-import static org.thingsboard.common.util.DonAsynchron.withCallback;
 
 @Slf4j
 public abstract class TbAbstractRelationActionNode<C extends TbAbstractRelationActionNodeConfiguration> implements TbNode {
@@ -68,7 +72,7 @@ public abstract class TbAbstractRelationActionNode<C extends TbAbstractRelationA
     @Override
     public void init(TbContext ctx, TbNodeConfiguration configuration) throws TbNodeException {
         this.config = loadEntityNodeActionConfig(configuration);
-        CacheBuilder cacheBuilder = CacheBuilder.newBuilder();
+        CacheBuilder<Object, Object> cacheBuilder = CacheBuilder.newBuilder();
         if (this.config.getEntityCacheExpiration() > 0) {
             cacheBuilder.expireAfterWrite(this.config.getEntityCacheExpiration(), TimeUnit.SECONDS);
         }
@@ -77,7 +81,8 @@ public abstract class TbAbstractRelationActionNode<C extends TbAbstractRelationA
 
     @Override
     public void onMsg(TbContext ctx, TbMsg msg) {
-        withCallback(processEntityRelationAction(ctx, msg),
+        String relationType = processPattern(msg, config.getRelationType());
+        withCallback(processEntityRelationAction(ctx, msg, relationType),
                 filterResult -> ctx.tellNext(filterResult.getMsg(), filterResult.isResult() ? SUCCESS : FAILURE), t -> ctx.tellFailure(msg, t), ctx.getDbCallbackExecutor());
     }
 
@@ -85,13 +90,13 @@ public abstract class TbAbstractRelationActionNode<C extends TbAbstractRelationA
     public void destroy() {
     }
 
-    protected ListenableFuture<RelationContainer> processEntityRelationAction(TbContext ctx, TbMsg msg) {
-        return Futures.transformAsync(getEntity(ctx, msg), entityContainer -> doProcessEntityRelationAction(ctx, msg, entityContainer));
+    protected ListenableFuture<RelationContainer> processEntityRelationAction(TbContext ctx, TbMsg msg, String relationType) {
+        return Futures.transformAsync(getEntity(ctx, msg), entityContainer -> doProcessEntityRelationAction(ctx, msg, entityContainer, relationType), ctx.getDbCallbackExecutor());
     }
 
     protected abstract boolean createEntityIfNotExists();
 
-    protected abstract ListenableFuture<RelationContainer> doProcessEntityRelationAction(TbContext ctx, TbMsg msg, EntityContainer entityContainer);
+    protected abstract ListenableFuture<RelationContainer> doProcessEntityRelationAction(TbContext ctx, TbMsg msg, EntityContainer entityContainer, String relationType);
 
     protected abstract C loadEntityNodeActionConfig(TbNodeConfiguration configuration) throws TbNodeException;
 
@@ -119,11 +124,11 @@ public abstract class TbAbstractRelationActionNode<C extends TbAbstractRelationA
         if (EntitySearchDirection.FROM.name().equals(this.config.getDirection())) {
             searchDirectionIds.setFromId(EntityIdFactory.getByTypeAndId(entityContainer.getEntityType().name(), entityContainer.getEntityId().toString()));
             searchDirectionIds.setToId(msg.getOriginator());
-            searchDirectionIds.setOrignatorDirectionFrom(false);
+            searchDirectionIds.setOriginatorDirectionFrom(false);
         } else {
             searchDirectionIds.setToId(EntityIdFactory.getByTypeAndId(entityContainer.getEntityType().name(), entityContainer.getEntityId().toString()));
             searchDirectionIds.setFromId(msg.getOriginator());
-            searchDirectionIds.setOrignatorDirectionFrom(true);
+            searchDirectionIds.setOriginatorDirectionFrom(true);
         }
         return searchDirectionIds;
     }
@@ -137,7 +142,7 @@ public abstract class TbAbstractRelationActionNode<C extends TbAbstractRelationA
     }
 
     protected String processPattern(TbMsg msg, String pattern) {
-        return TbNodeUtils.processPattern(pattern, msg.getMetaData());
+        return TbNodeUtils.processPattern(pattern, msg);
     }
 
     @Data
@@ -152,7 +157,7 @@ public abstract class TbAbstractRelationActionNode<C extends TbAbstractRelationA
     protected static class SearchDirectionIds {
         private EntityId fromId;
         private EntityId toId;
-        private boolean orignatorDirectionFrom;
+        private boolean originatorDirectionFrom;
     }
 
     private static class EntityCacheLoader extends CacheLoader<EntityKey, EntityContainer> {
@@ -186,7 +191,9 @@ public abstract class TbAbstractRelationActionNode<C extends TbAbstractRelationA
                         newDevice.setType(entitykey.getType());
                         newDevice.setTenantId(ctx.getTenantId());
                         Device savedDevice = deviceService.saveDevice(newDevice);
-                        ctx.sendTbMsgToRuleEngine(ctx.deviceCreatedMsg(savedDevice, ctx.getSelfId()));
+                        ctx.enqueue(ctx.deviceCreatedMsg(savedDevice, ctx.getSelfId()),
+                                () -> log.trace("Pushed Device Created message: {}", savedDevice),
+                                throwable -> log.warn("Failed to push Device Created message: {}", savedDevice, throwable));
                         targetEntity.setEntityId(savedDevice.getId());
                     }
                     break;
@@ -201,7 +208,9 @@ public abstract class TbAbstractRelationActionNode<C extends TbAbstractRelationA
                         newAsset.setType(entitykey.getType());
                         newAsset.setTenantId(ctx.getTenantId());
                         Asset savedAsset = assetService.saveAsset(newAsset);
-                        ctx.sendTbMsgToRuleEngine(ctx.assetCreatedMsg(savedAsset, ctx.getSelfId()));
+                        ctx.enqueue(ctx.assetCreatedMsg(savedAsset, ctx.getSelfId()),
+                                () -> log.trace("Pushed Asset Created message: {}", savedAsset),
+                                throwable -> log.warn("Failed to push Asset Created message: {}", savedAsset, throwable));
                         targetEntity.setEntityId(savedAsset.getId());
                     }
                     break;
@@ -215,7 +224,9 @@ public abstract class TbAbstractRelationActionNode<C extends TbAbstractRelationA
                         newCustomer.setTitle(entitykey.getEntityName());
                         newCustomer.setTenantId(ctx.getTenantId());
                         Customer savedCustomer = customerService.saveCustomer(newCustomer);
-                        ctx.sendTbMsgToRuleEngine(ctx.customerCreatedMsg(savedCustomer, ctx.getSelfId()));
+                        ctx.enqueue(ctx.customerCreatedMsg(savedCustomer, ctx.getSelfId()),
+                                () -> log.trace("Pushed Customer Created message: {}", savedCustomer),
+                                throwable -> log.warn("Failed to push Customer Created message: {}", savedCustomer, throwable));
                         targetEntity.setEntityId(savedCustomer.getId());
                     }
                     break;
@@ -229,15 +240,29 @@ public abstract class TbAbstractRelationActionNode<C extends TbAbstractRelationA
                         targetEntity.setEntityId(entityView.getId());
                     }
                     break;
+                case EDGE:
+                    EdgeService edgeService = ctx.getEdgeService();
+                    Edge edge = edgeService.findEdgeByTenantIdAndName(ctx.getTenantId(), entitykey.getEntityName());
+                    if (edge != null) {
+                        targetEntity.setEntityId(edge.getId());
+                    }
+                    break;
                 case DASHBOARD:
                     DashboardService dashboardService = ctx.getDashboardService();
-                    TextPageData<DashboardInfo> dashboardInfoTextPageData = dashboardService.findDashboardsByTenantId(ctx.getTenantId(), new TextPageLink(200, entitykey.getEntityName()));
+                    PageData<DashboardInfo> dashboardInfoTextPageData = dashboardService.findDashboardsByTenantId(ctx.getTenantId(), new PageLink(200, 0, entitykey.getEntityName()));
                     for (DashboardInfo dashboardInfo : dashboardInfoTextPageData.getData()) {
                         if (dashboardInfo.getTitle().equals(entitykey.getEntityName())) {
                             targetEntity.setEntityId(dashboardInfo.getId());
                         }
                     }
                     break;
+                case USER:
+                    UserService userService = ctx.getUserService();
+                    User user = userService.findUserByEmail(ctx.getTenantId(), entitykey.getEntityName());
+                    if(user != null){
+                        targetEntity.setEntityId(user.getId());
+                    }
+                    break;    
                 default:
                     return targetEntity;
             }

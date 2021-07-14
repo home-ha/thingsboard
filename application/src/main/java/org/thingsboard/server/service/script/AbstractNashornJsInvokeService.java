@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,31 +18,30 @@ package org.thingsboard.server.service.script;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
 import delight.nashornsandbox.NashornSandbox;
 import delight.nashornsandbox.NashornSandboxes;
-import jdk.nashorn.api.scripting.NashornScriptEngineFactory;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
-import org.thingsboard.common.util.ThingsBoardThreadFactory;
+import org.thingsboard.common.util.ThingsBoardExecutors;
+import org.thingsboard.server.queue.usagestats.TbApiUsageClient;
+import org.thingsboard.server.service.apiusage.TbApiUsageStateService;
 
-import javax.annotation.Nullable;
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
 import javax.script.Invocable;
 import javax.script.ScriptEngine;
+import javax.script.ScriptEngineManager;
 import javax.script.ScriptException;
 import java.util.UUID;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 @Slf4j
 public abstract class AbstractNashornJsInvokeService extends AbstractJsInvokeService {
@@ -50,19 +49,19 @@ public abstract class AbstractNashornJsInvokeService extends AbstractJsInvokeSer
     private NashornSandbox sandbox;
     private ScriptEngine engine;
     private ExecutorService monitorExecutorService;
-    private ScheduledExecutorService timeoutExecutorService;
 
     private final AtomicInteger jsPushedMsgs = new AtomicInteger(0);
     private final AtomicInteger jsInvokeMsgs = new AtomicInteger(0);
     private final AtomicInteger jsEvalMsgs = new AtomicInteger(0);
     private final AtomicInteger jsFailedMsgs = new AtomicInteger(0);
     private final AtomicInteger jsTimeoutMsgs = new AtomicInteger(0);
-    private final FutureCallback<UUID> evalCallback = new JsStatCallback<UUID>(jsEvalMsgs, jsTimeoutMsgs, jsFailedMsgs);
-    private final FutureCallback<Object> invokeCallback = new JsStatCallback<Object>(jsInvokeMsgs, jsTimeoutMsgs, jsFailedMsgs);
+    private final FutureCallback<UUID> evalCallback = new JsStatCallback<>(jsEvalMsgs, jsTimeoutMsgs, jsFailedMsgs);
+    private final FutureCallback<Object> invokeCallback = new JsStatCallback<>(jsInvokeMsgs, jsTimeoutMsgs, jsFailedMsgs);
 
-    @Autowired
+    private final ReentrantLock evalLock = new ReentrantLock();
+
     @Getter
-    private JsExecutorService jsExecutor;
+    private final JsExecutorService jsExecutor;
 
     @Value("${js.local.max_requests_timeout:0}")
     private long maxRequestsTimeout;
@@ -70,7 +69,12 @@ public abstract class AbstractNashornJsInvokeService extends AbstractJsInvokeSer
     @Value("${js.local.stats.enabled:false}")
     private boolean statsEnabled;
 
-    @Scheduled(fixedDelayString = "${js.remote.stats.print_interval_ms:10000}")
+    public AbstractNashornJsInvokeService(TbApiUsageStateService apiUsageStateService, TbApiUsageClient apiUsageClient, JsExecutorService jsExecutor) {
+        super(apiUsageStateService, apiUsageClient);
+        this.jsExecutor = jsExecutor;
+    }
+
+    @Scheduled(fixedDelayString = "${js.local.stats.print_interval_ms:10000}")
     public void printStats() {
         if (statsEnabled) {
             int pushedMsgs = jsPushedMsgs.getAndSet(0);
@@ -87,30 +91,26 @@ public abstract class AbstractNashornJsInvokeService extends AbstractJsInvokeSer
 
     @PostConstruct
     public void init() {
-        if (maxRequestsTimeout > 0) {
-            timeoutExecutorService = Executors.newSingleThreadScheduledExecutor(ThingsBoardThreadFactory.forName("nashorn-js-timeout"));
-        }
+        super.init(maxRequestsTimeout);
         if (useJsSandbox()) {
             sandbox = NashornSandboxes.create();
-            monitorExecutorService = Executors.newWorkStealingPool(getMonitorThreadPoolSize());
+            monitorExecutorService = ThingsBoardExecutors.newWorkStealingPool(getMonitorThreadPoolSize(), "nashorn-js-monitor");
             sandbox.setExecutor(monitorExecutorService);
             sandbox.setMaxCPUTime(getMaxCpuTime());
             sandbox.allowNoBraces(false);
             sandbox.allowLoadFunctions(true);
             sandbox.setMaxPreparedStatements(30);
         } else {
-            NashornScriptEngineFactory factory = new NashornScriptEngineFactory();
-            engine = factory.getScriptEngine(new String[]{"--no-java"});
+            ScriptEngineManager factory = new ScriptEngineManager();
+            engine = factory.getEngineByName("nashorn");
         }
     }
 
     @PreDestroy
     public void stop() {
+        super.stop();
         if (monitorExecutorService != null) {
             monitorExecutorService.shutdownNow();
-        }
-        if (timeoutExecutorService != null) {
-            timeoutExecutorService.shutdownNow();
         }
     }
 
@@ -125,22 +125,27 @@ public abstract class AbstractNashornJsInvokeService extends AbstractJsInvokeSer
         jsPushedMsgs.incrementAndGet();
         ListenableFuture<UUID> result = jsExecutor.executeAsync(() -> {
             try {
-                if (useJsSandbox()) {
-                    sandbox.eval(jsScript);
-                } else {
-                    engine.eval(jsScript);
+                evalLock.lock();
+                try {
+                    if (useJsSandbox()) {
+                        sandbox.eval(jsScript);
+                    } else {
+                        engine.eval(jsScript);
+                    }
+                } finally {
+                    evalLock.unlock();
                 }
                 scriptIdToNameMap.put(scriptId, functionName);
                 return scriptId;
             } catch (Exception e) {
-                log.warn("Failed to compile JS script: {}", e.getMessage(), e);
+                log.debug("Failed to compile JS script: {}", e.getMessage(), e);
                 throw new ExecutionException(e);
             }
         });
         if (maxRequestsTimeout > 0) {
             result = Futures.withTimeout(result, maxRequestsTimeout, TimeUnit.MILLISECONDS, timeoutExecutorService);
         }
-        Futures.addCallback(result, evalCallback);
+        Futures.addCallback(result, evalCallback, MoreExecutors.directExecutor());
         return result;
     }
 
@@ -155,7 +160,7 @@ public abstract class AbstractNashornJsInvokeService extends AbstractJsInvokeSer
                     return ((Invocable) engine).invokeFunction(functionName, args);
                 }
             } catch (Exception e) {
-                onScriptExecutionError(scriptId);
+                onScriptExecutionError(scriptId, e, functionName);
                 throw new ExecutionException(e);
             }
         });
@@ -163,7 +168,7 @@ public abstract class AbstractNashornJsInvokeService extends AbstractJsInvokeSer
         if (maxRequestsTimeout > 0) {
             result = Futures.withTimeout(result, maxRequestsTimeout, TimeUnit.MILLISECONDS, timeoutExecutorService);
         }
-        Futures.addCallback(result, invokeCallback);
+        Futures.addCallback(result, invokeCallback, MoreExecutors.directExecutor());
         return result;
     }
 

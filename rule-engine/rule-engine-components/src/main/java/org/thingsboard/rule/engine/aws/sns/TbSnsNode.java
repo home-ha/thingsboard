@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,8 +24,12 @@ import com.amazonaws.services.sns.model.PublishRequest;
 import com.amazonaws.services.sns.model.PublishResult;
 import com.google.common.util.concurrent.ListenableFuture;
 import lombok.extern.slf4j.Slf4j;
+import org.thingsboard.rule.engine.api.RuleNode;
+import org.thingsboard.rule.engine.api.TbContext;
+import org.thingsboard.rule.engine.api.TbNode;
+import org.thingsboard.rule.engine.api.TbNodeConfiguration;
+import org.thingsboard.rule.engine.api.TbNodeException;
 import org.thingsboard.rule.engine.api.util.TbNodeUtils;
-import org.thingsboard.rule.engine.api.*;
 import org.thingsboard.server.common.data.plugin.ComponentType;
 import org.thingsboard.server.common.msg.TbMsg;
 import org.thingsboard.server.common.msg.TbMsgMetaData;
@@ -74,11 +78,8 @@ public class TbSnsNode implements TbNode {
     @Override
     public void onMsg(TbContext ctx, TbMsg msg) throws ExecutionException, InterruptedException, TbNodeException {
         withCallback(publishMessageAsync(ctx, msg),
-                m -> ctx.tellNext(m, TbRelationTypes.SUCCESS),
-                t -> {
-                    TbMsg next = processException(ctx, msg, t);
-                    ctx.tellFailure(next, t);
-                });
+                ctx::tellSuccess,
+                t -> ctx.tellFailure(processException(ctx, msg, t), t));
     }
 
     private ListenableFuture<TbMsg> publishMessageAsync(TbContext ctx, TbMsg msg) {
@@ -86,7 +87,7 @@ public class TbSnsNode implements TbNode {
     }
 
     private TbMsg publishMessage(TbContext ctx, TbMsg msg) {
-        String topicArn = TbNodeUtils.processPattern(this.config.getTopicArnPattern(), msg.getMetaData());
+        String topicArn = TbNodeUtils.processPattern(this.config.getTopicArnPattern(), msg);
         PublishRequest publishRequest = new PublishRequest()
                 .withTopicArn(topicArn)
                 .withMessage(msg.getData());

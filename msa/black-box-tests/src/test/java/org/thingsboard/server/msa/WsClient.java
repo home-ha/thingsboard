@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import org.java_websocket.client.WebSocketClient;
 import org.java_websocket.handshake.ServerHandshake;
 import org.thingsboard.server.msa.mapper.WsTelemetryResponse;
 
+import javax.net.ssl.SSLParameters;
 import java.io.IOException;
 import java.net.URI;
 import java.util.concurrent.CountDownLatch;
@@ -88,5 +89,10 @@ public class WsClient extends WebSocketClient {
             log.error("Timeout, ws message wasn't received");
             throw new RuntimeException(e);
         }
+    }
+
+    @Override
+    protected void onSetSSLParameters(SSLParameters sslParameters) {
+        sslParameters.setEndpointIdentificationAlgorithm(null);
     }
 }

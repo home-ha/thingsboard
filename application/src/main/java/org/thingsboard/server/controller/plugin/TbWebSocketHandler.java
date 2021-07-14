@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@ import org.thingsboard.server.common.data.id.TenantId;
 import org.thingsboard.server.common.data.id.UserId;
 import org.thingsboard.server.common.msg.tools.TbRateLimits;
 import org.thingsboard.server.config.WebSocketConfiguration;
+import org.thingsboard.server.queue.util.TbCoreComponent;
 import org.thingsboard.server.service.security.model.SecurityUser;
 import org.thingsboard.server.service.security.model.UserPrincipal;
 import org.thingsboard.server.service.telemetry.SessionEvent;
@@ -40,9 +41,13 @@ import org.thingsboard.server.service.telemetry.TelemetryWebSocketMsgEndpoint;
 import org.thingsboard.server.service.telemetry.TelemetryWebSocketService;
 import org.thingsboard.server.service.telemetry.TelemetryWebSocketSessionRef;
 
-import javax.websocket.*;
+import javax.websocket.RemoteEndpoint;
+import javax.websocket.SendHandler;
+import javax.websocket.SendResult;
+import javax.websocket.Session;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.ByteBuffer;
 import java.security.InvalidParameterException;
 import java.util.Queue;
 import java.util.Set;
@@ -52,18 +57,19 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.LinkedBlockingQueue;
 
 @Service
+@TbCoreComponent
 @Slf4j
 public class TbWebSocketHandler extends TextWebSocketHandler implements TelemetryWebSocketMsgEndpoint {
 
     private static final ConcurrentMap<String, SessionMetaData> internalSessionMap = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, String> externalSessionMap = new ConcurrentHashMap<>();
+    private static final ByteBuffer PING_MSG = ByteBuffer.wrap(new byte[]{});
 
     @Autowired
     private TelemetryWebSocketService webSocketService;
 
     @Value("${server.ws.send_timeout:5000}")
     private long sendTimeout;
-
     @Value("${server.ws.limits.max_sessions_per_tenant:0}")
     private int maxSessionsPerTenant;
     @Value("${server.ws.limits.max_sessions_per_customer:0}")
@@ -78,6 +84,9 @@ public class TbWebSocketHandler extends TextWebSocketHandler implements Telemetr
     @Value("${server.ws.limits.max_updates_per_session:}")
     private String perSessionUpdatesConfiguration;
 
+    @Value("${server.ws.ping_timeout:30000}")
+    private long pingTimeout;
+
     private ConcurrentMap<String, TelemetryWebSocketSessionRef> blacklistedSessions = new ConcurrentHashMap<>();
     private ConcurrentMap<String, TbRateLimits> perSessionUpdateLimits = new ConcurrentHashMap<>();
 
@@ -91,10 +100,10 @@ public class TbWebSocketHandler extends TextWebSocketHandler implements Telemetr
         try {
             SessionMetaData sessionMd = internalSessionMap.get(session.getId());
             if (sessionMd != null) {
-                log.info("[{}][{}] Processing {}", sessionMd.sessionRef.getSecurityCtx().getTenantId(), session.getId(), message.getPayload());
+                log.trace("[{}][{}] Processing {}", sessionMd.sessionRef.getSecurityCtx().getTenantId(), session.getId(), message.getPayload());
                 webSocketService.handleWebSocketMsg(sessionMd.sessionRef, message.getPayload());
             } else {
-                log.warn("[{}] Failed to find session", session.getId());
+                log.trace("[{}] Failed to find session", session.getId());
                 session.close(CloseStatus.SERVER_ERROR.withReason("Session not found!"));
             }
         } catch (IOException e) {
@@ -119,6 +128,7 @@ public class TbWebSocketHandler extends TextWebSocketHandler implements Telemetr
                 return;
             }
             internalSessionMap.put(internalSessionId, new SessionMetaData(session, sessionRef, maxMsgQueuePerSession));
+
             externalSessionMap.put(externalSessionId, internalSessionId);
             processInWebSocketService(sessionRef, SessionEvent.onEstablished());
             log.info("[{}][{}][{}] Session is opened", sessionRef.getSecurityCtx().getTenantId(), externalSessionId, session.getId());
@@ -138,7 +148,7 @@ public class TbWebSocketHandler extends TextWebSocketHandler implements Telemetr
         if (sessionMd != null) {
             processInWebSocketService(sessionMd.sessionRef, SessionEvent.onError(tError));
         } else {
-            log.warn("[{}] Failed to find session", session.getId());
+            log.trace("[{}] Failed to find session", session.getId());
         }
         log.trace("[{}] Session transport error", session.getId(), tError);
     }
@@ -188,6 +198,8 @@ public class TbWebSocketHandler extends TextWebSocketHandler implements Telemetr
         private volatile boolean isSending = false;
         private final Queue<String> msgQueue;
 
+        private volatile long lastActivityTime;
+
         SessionMetaData(WebSocketSession session, TelemetryWebSocketSessionRef sessionRef, int maxMsgQueuePerSession) {
             super();
             this.session = session;
@@ -195,6 +207,23 @@ public class TbWebSocketHandler extends TextWebSocketHandler implements Telemetr
             this.asyncRemote = nativeSession.getAsyncRemote();
             this.sessionRef = sessionRef;
             this.msgQueue = new LinkedBlockingQueue<>(maxMsgQueuePerSession);
+            this.lastActivityTime = System.currentTimeMillis();
+        }
+
+        synchronized void sendPing(long currentTime) {
+            try {
+                if (currentTime - lastActivityTime >= pingTimeout) {
+                    this.asyncRemote.sendPing(PING_MSG);
+                    lastActivityTime = currentTime;
+                }
+            } catch (Exception e) {
+                log.trace("[{}] Failed to send ping msg", session.getId(), e);
+                try {
+                    close(this.sessionRef, CloseStatus.SESSION_NOT_RELIABLE);
+                } catch (IOException ioe) {
+                    log.trace("[{}] Session transport error", session.getId(), ioe);
+                }
+            }
         }
 
         synchronized void sendMsg(String msg) {
@@ -242,6 +271,7 @@ public class TbWebSocketHandler extends TextWebSocketHandler implements Telemetr
                     log.trace("[{}] Session transport error", session.getId(), ioe);
                 }
             } else {
+                lastActivityTime = System.currentTimeMillis();
                 String msg = msgQueue.poll();
                 if (msg != null) {
                     sendMsgInternal(msg);
@@ -275,6 +305,22 @@ public class TbWebSocketHandler extends TextWebSocketHandler implements Telemetr
                     }
                 }
                 sessionMd.sendMsg(msg);
+            } else {
+                log.warn("[{}][{}] Failed to find session by internal id", externalId, internalId);
+            }
+        } else {
+            log.warn("[{}] Failed to find session by external id", externalId);
+        }
+    }
+
+    @Override
+    public void sendPing(TelemetryWebSocketSessionRef sessionRef, long currentTime) throws IOException {
+        String externalId = sessionRef.getSessionId();
+        String internalId = externalSessionMap.get(externalId);
+        if (internalId != null) {
+            SessionMetaData sessionMd = internalSessionMap.get(internalId);
+            if (sessionMd != null) {
+                sessionMd.sendPing(currentTime);
             } else {
                 log.warn("[{}][{}] Failed to find session by internal id", externalId, internalId);
             }

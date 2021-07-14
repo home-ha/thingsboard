@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,13 +26,13 @@ import org.thingsboard.rule.engine.api.util.TbNodeUtils;
 import org.thingsboard.server.common.data.plugin.ComponentType;
 import org.thingsboard.server.common.msg.TbMsg;
 import org.thingsboard.server.common.msg.TbMsgMetaData;
+import org.thingsboard.server.common.msg.queue.ServiceQueue;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
-import static org.thingsboard.rule.engine.api.TbRelationTypes.FAILURE;
 import static org.thingsboard.rule.engine.api.TbRelationTypes.SUCCESS;
 
 @Slf4j
@@ -41,7 +41,7 @@ import static org.thingsboard.rule.engine.api.TbRelationTypes.SUCCESS;
         name = "delay",
         configClazz = TbMsgDelayNodeConfiguration.class,
         nodeDescription = "Delays incoming message",
-        nodeDetails = "Delays messages for configurable period.",
+        nodeDetails = "Delays messages for configurable period. Please note, this node acknowledges the message from the current queue (message will be removed from queue)",
         icon = "pause",
         uiResources = {"static/rulenode/rulenode-core-config.js"},
         configDirective = "tbActionNodeMsgDelayConfig"
@@ -65,15 +65,16 @@ public class TbMsgDelayNode implements TbNode {
         if (msg.getType().equals(TB_MSG_DELAY_NODE_MSG)) {
             TbMsg pendingMsg = pendingMsgs.remove(UUID.fromString(msg.getData()));
             if (pendingMsg != null) {
-                ctx.tellNext(pendingMsg, SUCCESS);
+                ctx.enqueueForTellNext(pendingMsg, SUCCESS);
             }
         } else {
-            if(pendingMsgs.size() < config.getMaxPendingMsgs()) {
+            if (pendingMsgs.size() < config.getMaxPendingMsgs()) {
                 pendingMsgs.put(msg.getId(), msg);
-                TbMsg tickMsg = ctx.newMsg(TB_MSG_DELAY_NODE_MSG, ctx.getSelfId(), new TbMsgMetaData(), msg.getId().toString());
+                TbMsg tickMsg = ctx.newMsg(ServiceQueue.MAIN, TB_MSG_DELAY_NODE_MSG, ctx.getSelfId(), msg.getCustomerId(), new TbMsgMetaData(), msg.getId().toString());
                 ctx.tellSelf(tickMsg, getDelay(msg));
+                ctx.ack(msg);
             } else {
-                ctx.tellNext(msg, FAILURE, new RuntimeException("Max limit of pending messages reached!"));
+                ctx.tellFailure(msg, new RuntimeException("Max limit of pending messages reached!"));
             }
         }
     }
@@ -82,7 +83,7 @@ public class TbMsgDelayNode implements TbNode {
         int periodInSeconds;
         if (config.isUseMetadataPeriodInSecondsPatterns()) {
             if (isParsable(msg, config.getPeriodInSecondsPattern())) {
-                periodInSeconds = Integer.parseInt(TbNodeUtils.processPattern(config.getPeriodInSecondsPattern(), msg.getMetaData()));
+                periodInSeconds = Integer.parseInt(TbNodeUtils.processPattern(config.getPeriodInSecondsPattern(), msg));
             } else {
                 throw new RuntimeException("Can't parse period in seconds from metadata using pattern: " + config.getPeriodInSecondsPattern());
             }
@@ -93,7 +94,7 @@ public class TbMsgDelayNode implements TbNode {
     }
 
     private boolean isParsable(TbMsg msg, String pattern) {
-        return NumberUtils.isParsable(TbNodeUtils.processPattern(pattern, msg.getMetaData()));
+        return NumberUtils.isParsable(TbNodeUtils.processPattern(pattern, msg));
     }
 
     @Override

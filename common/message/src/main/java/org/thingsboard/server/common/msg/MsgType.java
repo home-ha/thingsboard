@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,25 +15,22 @@
  */
 package org.thingsboard.server.common.msg;
 
+import org.thingsboard.server.common.msg.queue.PartitionChangeMsg;
+import org.thingsboard.server.common.msg.queue.QueueToRuleEngineMsg;
+
 /**
  * Created by ashvayka on 15.03.18.
  */
-//TODO: add all "See" references
 public enum MsgType {
 
     /**
      * ADDED/UPDATED/DELETED events for server nodes.
      *
-     * See {@link org.thingsboard.server.common.msg.cluster.ClusterEventMsg}
+     * See {@link PartitionChangeMsg}
      */
-    CLUSTER_EVENT_MSG,
+    PARTITION_CHANGE_MSG,
 
     APP_INIT_MSG,
-
-    /**
-     * All messages, could be send  to cluster
-    */
-    SEND_TO_CLUSTER_MSG,
 
     /**
      * ADDED/UPDATED/DELETED events for main entities.
@@ -43,11 +40,16 @@ public enum MsgType {
     COMPONENT_LIFE_CYCLE_MSG,
 
     /**
-     * Misc messages from the REST API/SERVICE layer to the new rule engine.
-     *
-     * See {@link org.thingsboard.server.common.msg.system.ServiceToRuleEngineMsg}
+     * Special message to indicate rule node update request
      */
-    SERVICE_TO_RULE_ENGINE_MSG,
+    RULE_NODE_UPDATED_MSG,
+
+    /**
+     * Misc messages consumed from the Queue and forwarded to Rule Engine Actor.
+     *
+     * See {@link QueueToRuleEngineMsg}
+     */
+    QUEUE_TO_RULE_ENGINE_MSG,
 
     /**
      * Message that is sent by RuleChainActor to RuleActor with command to process TbMsg.
@@ -70,11 +72,6 @@ public enum MsgType {
     REMOTE_TO_RULE_CHAIN_TELL_NEXT_MSG,
 
     /**
-     * Message that is sent by RuleActor implementation to RuleActor itself to log the error.
-     */
-    RULE_TO_SELF_ERROR_MSG,
-
-    /**
      * Message that is sent by RuleActor implementation to RuleActor itself to process the message.
      */
     RULE_TO_SELF_MSG,
@@ -85,27 +82,34 @@ public enum MsgType {
 
     DEVICE_NAME_OR_TYPE_UPDATE_TO_DEVICE_ACTOR_MSG,
 
+    DEVICE_EDGE_UPDATE_TO_DEVICE_ACTOR_MSG,
+
     DEVICE_RPC_REQUEST_TO_DEVICE_ACTOR_MSG,
+
+    DEVICE_RPC_RESPONSE_TO_DEVICE_ACTOR_MSG,
 
     SERVER_RPC_RESPONSE_TO_DEVICE_ACTOR_MSG,
 
     DEVICE_ACTOR_SERVER_SIDE_RPC_TIMEOUT_MSG,
 
-    DEVICE_ACTOR_CLIENT_SIDE_RPC_TIMEOUT_MSG,
-
     /**
      * Message that is sent from the Device Actor to Rule Engine. Requires acknowledgement
      */
-    DEVICE_ACTOR_TO_RULE_ENGINE_MSG,
 
     SESSION_TIMEOUT_MSG,
 
     STATS_PERSIST_TICK_MSG,
 
+    STATS_PERSIST_MSG,
 
     /**
      * Message that is sent by TransportRuleEngineService to Device Actor. Represents messages from the device itself.
      */
-    TRANSPORT_TO_DEVICE_ACTOR_MSG;
+    TRANSPORT_TO_DEVICE_ACTOR_MSG,
+
+    /**
+     * Message that is sent on Edge Event to Edge Session
+     */
+    EDGE_EVENT_UPDATE_TO_EDGE_SESSION_MSG;
 
 }

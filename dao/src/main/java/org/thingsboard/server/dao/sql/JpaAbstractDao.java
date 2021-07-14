@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
  */
 package org.thingsboard.server.dao.sql;
 
-import com.datastax.driver.core.utils.UUIDs;
+import com.datastax.oss.driver.api.core.uuid.Uuids;
 import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.ListenableFuture;
 import lombok.extern.slf4j.Slf4j;
@@ -26,11 +26,10 @@ import org.thingsboard.server.dao.Dao;
 import org.thingsboard.server.dao.DaoUtil;
 import org.thingsboard.server.dao.model.BaseEntity;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-
-import static org.thingsboard.server.common.data.UUIDConverter.fromTimeUUID;
 
 /**
  * @author Valerii Sosliuk
@@ -42,9 +41,10 @@ public abstract class JpaAbstractDao<E extends BaseEntity<D>, D>
 
     protected abstract Class<E> getEntityClass();
 
-    protected abstract CrudRepository<E, String> getCrudRepository();
+    protected abstract CrudRepository<E, UUID> getCrudRepository();
 
-    protected void setSearchText(E entity) {}
+    protected void setSearchText(E entity) {
+    }
 
     @Override
     @Transactional
@@ -58,8 +58,10 @@ public abstract class JpaAbstractDao<E extends BaseEntity<D>, D>
         }
         setSearchText(entity);
         log.debug("Saving entity {}", entity);
-        if (entity.getId() == null) {
-            entity.setId(UUIDs.timeBased());
+        if (entity.getUuid() == null) {
+            UUID uuid = Uuids.timeBased();
+            entity.setUuid(uuid);
+            entity.setCreatedTime(Uuids.unixTimestamp(uuid));
         }
         entity = getCrudRepository().save(entity);
         return DaoUtil.getData(entity);
@@ -68,23 +70,28 @@ public abstract class JpaAbstractDao<E extends BaseEntity<D>, D>
     @Override
     public D findById(TenantId tenantId, UUID key) {
         log.debug("Get entity by key {}", key);
-        Optional<E> entity = getCrudRepository().findById(fromTimeUUID(key));
+        Optional<E> entity = getCrudRepository().findById(key);
         return DaoUtil.getData(entity);
     }
 
     @Override
     public ListenableFuture<D> findByIdAsync(TenantId tenantId, UUID key) {
         log.debug("Get entity by key async {}", key);
-        return service.submit(() -> DaoUtil.getData(getCrudRepository().findById(fromTimeUUID(key))));
+        return service.submit(() -> DaoUtil.getData(getCrudRepository().findById(key)));
     }
 
     @Override
     @Transactional
     public boolean removeById(TenantId tenantId, UUID id) {
-        String key = fromTimeUUID(id);
-        getCrudRepository().deleteById(key);
-        log.debug("Remove request: {}", key);
-        return !getCrudRepository().existsById(key);
+        getCrudRepository().deleteById(id);
+        log.debug("Remove request: {}", id);
+        return !getCrudRepository().existsById(id);
+    }
+
+    @Transactional
+    public void removeAllByIds(Collection<UUID> ids) {
+        CrudRepository<E, UUID> repository = getCrudRepository();
+        ids.forEach(repository::deleteById);
     }
 
     @Override

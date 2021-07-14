@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,8 +27,8 @@ import org.springframework.stereotype.Service;
 import org.thingsboard.server.common.data.id.ComponentDescriptorId;
 import org.thingsboard.server.common.data.id.EntityId;
 import org.thingsboard.server.common.data.id.TenantId;
-import org.thingsboard.server.common.data.page.TextPageData;
-import org.thingsboard.server.common.data.page.TextPageLink;
+import org.thingsboard.server.common.data.page.PageData;
+import org.thingsboard.server.common.data.page.PageLink;
 import org.thingsboard.server.common.data.plugin.ComponentDescriptor;
 import org.thingsboard.server.common.data.plugin.ComponentScope;
 import org.thingsboard.server.common.data.plugin.ComponentType;
@@ -37,7 +37,6 @@ import org.thingsboard.server.dao.exception.IncorrectParameterException;
 import org.thingsboard.server.dao.service.DataValidator;
 import org.thingsboard.server.dao.service.Validator;
 
-import java.util.List;
 import java.util.Optional;
 
 /**
@@ -70,17 +69,15 @@ public class BaseComponentDescriptorService implements ComponentDescriptorServic
     }
 
     @Override
-    public TextPageData<ComponentDescriptor> findByTypeAndPageLink(TenantId tenantId, ComponentType type, TextPageLink pageLink) {
-        Validator.validatePageLink(pageLink, "Incorrect PageLink object for search plugin components request.");
-        List<ComponentDescriptor> components = componentDescriptorDao.findByTypeAndPageLink(tenantId, type, pageLink);
-        return new TextPageData<>(components, pageLink);
+    public PageData<ComponentDescriptor> findByTypeAndPageLink(TenantId tenantId, ComponentType type, PageLink pageLink) {
+        Validator.validatePageLink(pageLink);
+        return componentDescriptorDao.findByTypeAndPageLink(tenantId, type, pageLink);
     }
 
     @Override
-    public TextPageData<ComponentDescriptor> findByScopeAndTypeAndPageLink(TenantId tenantId, ComponentScope scope, ComponentType type, TextPageLink pageLink) {
-        Validator.validatePageLink(pageLink, "Incorrect PageLink object for search plugin components request.");
-        List<ComponentDescriptor> components = componentDescriptorDao.findByScopeAndTypeAndPageLink(tenantId, scope, type, pageLink);
-        return new TextPageData<>(components, pageLink);
+    public PageData<ComponentDescriptor> findByScopeAndTypeAndPageLink(TenantId tenantId, ComponentScope scope, ComponentType type, PageLink pageLink) {
+        Validator.validatePageLink(pageLink);
+        return componentDescriptorDao.findByScopeAndTypeAndPageLink(tenantId, scope, type, pageLink);
     }
 
     @Override
@@ -109,16 +106,16 @@ public class BaseComponentDescriptorService implements ComponentDescriptorServic
                 @Override
                 protected void validateDataImpl(TenantId tenantId, ComponentDescriptor plugin) {
                     if (plugin.getType() == null) {
-                        throw new DataValidationException("Component type should be specified!.");
+                        throw new DataValidationException("Component type should be specified!");
                     }
                     if (plugin.getScope() == null) {
-                        throw new DataValidationException("Component scope should be specified!.");
+                        throw new DataValidationException("Component scope should be specified!");
                     }
                     if (StringUtils.isEmpty(plugin.getName())) {
-                        throw new DataValidationException("Component name should be specified!.");
+                        throw new DataValidationException("Component name should be specified!");
                     }
                     if (StringUtils.isEmpty(plugin.getClazz())) {
-                        throw new DataValidationException("Component clazz should be specified!.");
+                        throw new DataValidationException("Component clazz should be specified!");
                     }
                 }
             };

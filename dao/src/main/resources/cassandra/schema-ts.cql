@@ -1,5 +1,5 @@
 --
--- Copyright © 2016-2019 The Thingsboard Authors
+-- Copyright © 2016-2021 The Thingsboard Authors
 --
 -- Licensed under the Apache License, Version 2.0 (the "License");
 -- you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS thingsboard.ts_kv_cf (
     str_v text,
     long_v bigint,
     dbl_v double,
+    json_v text,
     PRIMARY KEY (( entity_type, entity_id, key, partition ), ts)
 );
 
@@ -41,15 +42,3 @@ CREATE TABLE IF NOT EXISTS thingsboard.ts_kv_partitions_cf (
     PRIMARY KEY (( entity_type, entity_id, key ), partition)
 ) WITH CLUSTERING ORDER BY ( partition ASC )
   AND compaction = { 'class' :  'LeveledCompactionStrategy'  };
-
-CREATE TABLE IF NOT EXISTS thingsboard.ts_kv_latest_cf (
-    entity_type text, // (DEVICE, CUSTOMER, TENANT)
-    entity_id timeuuid,
-    key text,
-    ts bigint,
-    bool_v boolean,
-    str_v text,
-    long_v bigint,
-    dbl_v double,
-    PRIMARY KEY (( entity_type, entity_id ), key)
-) WITH compaction = { 'class' :  'LeveledCompactionStrategy'  };

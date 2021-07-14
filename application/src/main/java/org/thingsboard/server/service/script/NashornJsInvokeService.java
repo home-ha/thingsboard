@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
+import org.thingsboard.server.queue.usagestats.TbApiUsageClient;
+import org.thingsboard.server.service.apiusage.TbApiUsageStateService;
+
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @ConditionalOnProperty(prefix = "js", value = "evaluator", havingValue = "local", matchIfMissing = true)
@@ -36,6 +40,13 @@ public class NashornJsInvokeService extends AbstractNashornJsInvokeService {
 
     @Value("${js.local.max_errors}")
     private int maxErrors;
+
+    @Value("${js.local.max_black_list_duration_sec:60}")
+    private int maxBlackListDurationSec;
+
+    public NashornJsInvokeService(TbApiUsageStateService apiUsageStateService, TbApiUsageClient apiUsageClient, JsExecutorService jsExecutor) {
+        super(apiUsageStateService, apiUsageClient, jsExecutor);
+    }
 
     @Override
     protected boolean useJsSandbox() {
@@ -55,5 +66,10 @@ public class NashornJsInvokeService extends AbstractNashornJsInvokeService {
     @Override
     protected int getMaxErrors() {
         return maxErrors;
+    }
+
+    @Override
+    protected long getMaxBlacklistDuration() {
+        return TimeUnit.SECONDS.toMillis(maxBlackListDurationSec);
     }
 }

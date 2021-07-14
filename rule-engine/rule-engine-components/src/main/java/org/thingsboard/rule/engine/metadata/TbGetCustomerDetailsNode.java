@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ package org.thingsboard.rule.engine.metadata;
 
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
 import lombok.extern.slf4j.Slf4j;
 import org.thingsboard.rule.engine.api.RuleNode;
 import org.thingsboard.rule.engine.api.TbContext;
@@ -27,7 +28,9 @@ import org.thingsboard.server.common.data.ContactBased;
 import org.thingsboard.server.common.data.Customer;
 import org.thingsboard.server.common.data.id.AssetId;
 import org.thingsboard.server.common.data.id.DeviceId;
+import org.thingsboard.server.common.data.id.EdgeId;
 import org.thingsboard.server.common.data.id.EntityViewId;
+import org.thingsboard.server.common.data.id.UserId;
 import org.thingsboard.server.common.data.plugin.ComponentType;
 import org.thingsboard.server.common.msg.TbMsg;
 
@@ -63,7 +66,7 @@ public class TbGetCustomerDetailsNode extends TbAbstractGetEntityDetailsNode<TbG
             } else {
                 return Futures.immediateFuture(null);
             }
-        });
+        }, MoreExecutors.directExecutor());
     }
 
     private ListenableFuture<Customer> getCustomer(TbContext ctx, TbMsg msg) {
@@ -79,7 +82,7 @@ public class TbGetCustomerDetailsNode extends TbAbstractGetEntityDetailsNode<TbG
                     } else {
                         return Futures.immediateFuture(null);
                     }
-                });
+                }, MoreExecutors.directExecutor());
             case ASSET:
                 return Futures.transformAsync(ctx.getAssetService().findAssetByIdAsync(ctx.getTenantId(), new AssetId(msg.getOriginator().getId())), asset -> {
                     if (asset != null) {
@@ -91,7 +94,7 @@ public class TbGetCustomerDetailsNode extends TbAbstractGetEntityDetailsNode<TbG
                     } else {
                         return Futures.immediateFuture(null);
                     }
-                });
+                }, MoreExecutors.directExecutor());
             case ENTITY_VIEW:
                 return Futures.transformAsync(ctx.getEntityViewService().findEntityViewByIdAsync(ctx.getTenantId(), new EntityViewId(msg.getOriginator().getId())), entityView -> {
                     if (entityView != null) {
@@ -103,7 +106,31 @@ public class TbGetCustomerDetailsNode extends TbAbstractGetEntityDetailsNode<TbG
                     } else {
                         return Futures.immediateFuture(null);
                     }
-                });
+                }, MoreExecutors.directExecutor());
+            case USER:
+                return Futures.transformAsync(ctx.getUserService().findUserByIdAsync(ctx.getTenantId(), new UserId(msg.getOriginator().getId())), user -> {
+                    if (user != null) {
+                        if (!user.getCustomerId().isNullUid()) {
+                            return ctx.getCustomerService().findCustomerByIdAsync(ctx.getTenantId(), user.getCustomerId());
+                        } else {
+                            throw new RuntimeException("User with name '" + user.getName() + "' is not assigned to Customer.");
+                        }
+                    } else {
+                        return Futures.immediateFuture(null);
+                    }
+                }, MoreExecutors.directExecutor());
+            case EDGE:
+                return Futures.transformAsync(ctx.getEdgeService().findEdgeByIdAsync(ctx.getTenantId(), new EdgeId(msg.getOriginator().getId())), edge -> {
+                    if (edge != null) {
+                        if (!edge.getCustomerId().isNullUid()) {
+                            return ctx.getCustomerService().findCustomerByIdAsync(ctx.getTenantId(), edge.getCustomerId());
+                        } else {
+                            throw new RuntimeException("Edge with name '" + edge.getName() + "' is not assigned to Customer.");
+                        }
+                    } else {
+                        return Futures.immediateFuture(null);
+                    }
+                }, MoreExecutors.directExecutor());
             default:
                 throw new RuntimeException("Entity with entityType '" + msg.getOriginator().getEntityType() + "' is not supported.");
         }

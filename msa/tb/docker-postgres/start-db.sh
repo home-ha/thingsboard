@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright © 2016-2019 The Thingsboard Authors
+# Copyright © 2016-2021 The Thingsboard Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,14 +17,19 @@
 
 firstlaunch=${DATA_FOLDER}/.firstlaunch
 
+PG_CTL=$(find /usr/lib/postgresql/ -name pg_ctl)
+
 if [ ! -d ${PGDATA} ]; then
     mkdir -p ${PGDATA}
-    chown -R postgres:postgres ${PGDATA}
-    su postgres -c '/usr/lib/postgresql/9.6/bin/pg_ctl initdb -U postgres'
+    ${PG_CTL} initdb
 fi
 
-su postgres -c '/usr/lib/postgresql/9.6/bin/pg_ctl -l /var/log/postgres/postgres.log -w start'
+exec setsid nohup postgres >> ${PGLOG}/postgres.log 2>&1 &
 
 if [ ! -f ${firstlaunch} ]; then
-    su postgres -c 'psql -U postgres -d postgres -c "CREATE DATABASE thingsboard"'
+    sleep 2
+    while ! psql -U ${pkg.user} -d postgres -c "CREATE DATABASE thingsboard"
+    do
+      sleep 1
+    done
 fi

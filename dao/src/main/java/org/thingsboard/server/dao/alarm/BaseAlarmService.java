@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.google.common.base.Function;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -28,16 +29,19 @@ import org.springframework.util.StringUtils;
 import org.thingsboard.common.util.ThingsBoardThreadFactory;
 import org.thingsboard.server.common.data.Tenant;
 import org.thingsboard.server.common.data.alarm.Alarm;
-import org.thingsboard.server.common.data.alarm.AlarmId;
 import org.thingsboard.server.common.data.alarm.AlarmInfo;
 import org.thingsboard.server.common.data.alarm.AlarmQuery;
 import org.thingsboard.server.common.data.alarm.AlarmSearchStatus;
 import org.thingsboard.server.common.data.alarm.AlarmSeverity;
 import org.thingsboard.server.common.data.alarm.AlarmStatus;
+import org.thingsboard.server.common.data.exception.ApiUsageLimitsExceededException;
+import org.thingsboard.server.common.data.id.AlarmId;
+import org.thingsboard.server.common.data.id.CustomerId;
 import org.thingsboard.server.common.data.id.EntityId;
 import org.thingsboard.server.common.data.id.TenantId;
-import org.thingsboard.server.common.data.page.TimePageData;
-import org.thingsboard.server.common.data.page.TimePageLink;
+import org.thingsboard.server.common.data.page.PageData;
+import org.thingsboard.server.common.data.query.AlarmData;
+import org.thingsboard.server.common.data.query.AlarmDataQuery;
 import org.thingsboard.server.common.data.relation.EntityRelation;
 import org.thingsboard.server.common.data.relation.EntityRelationsQuery;
 import org.thingsboard.server.common.data.relation.EntitySearchDirection;
@@ -53,8 +57,9 @@ import javax.annotation.Nullable;
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
-import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
@@ -69,7 +74,8 @@ import static org.thingsboard.server.dao.service.Validator.validateId;
 @Slf4j
 public class BaseAlarmService extends AbstractEntityService implements AlarmService {
 
-    public static final String ALARM_RELATION_PREFIX = "ALARM_";
+    public static final String INCORRECT_TENANT_ID = "Incorrect tenantId ";
+    public static final String INCORRECT_CUSTOMER_ID = "Incorrect customerId ";
 
     @Autowired
     private AlarmDao alarmDao;
@@ -95,7 +101,12 @@ public class BaseAlarmService extends AbstractEntityService implements AlarmServ
     }
 
     @Override
-    public Alarm createOrUpdateAlarm(Alarm alarm) {
+    public AlarmOperationResult createOrUpdateAlarm(Alarm alarm) {
+        return createOrUpdateAlarm(alarm, true);
+    }
+
+    @Override
+    public AlarmOperationResult createOrUpdateAlarm(Alarm alarm, boolean alarmCreationEnabled) {
         alarmDataValidator.validate(alarm, Alarm::getTenantId);
         try {
             if (alarm.getStartTs() == 0L) {
@@ -104,9 +115,13 @@ public class BaseAlarmService extends AbstractEntityService implements AlarmServ
             if (alarm.getEndTs() == 0L) {
                 alarm.setEndTs(alarm.getStartTs());
             }
+            alarm.setCustomerId(entityService.fetchEntityCustomerId(alarm.getTenantId(), alarm.getOriginator()));
             if (alarm.getId() == null) {
                 Alarm existing = alarmDao.findLatestByOriginatorAndType(alarm.getTenantId(), alarm.getOriginator(), alarm.getType()).get();
                 if (existing == null || existing.getStatus().isCleared()) {
+                    if (!alarmCreationEnabled) {
+                        throw new ApiUsageLimitsExceededException("Alarms creation is disabled");
+                    }
                     return createAlarm(alarm);
                 } else {
                     return updateAlarm(existing, alarm);
@@ -124,39 +139,56 @@ public class BaseAlarmService extends AbstractEntityService implements AlarmServ
     }
 
     @Override
-    public Boolean deleteAlarm(TenantId tenantId, AlarmId alarmId) {
+    public PageData<AlarmData> findAlarmDataByQueryForEntities(TenantId tenantId, CustomerId customerId,
+                                                               AlarmDataQuery query, Collection<EntityId> orderedEntityIds) {
+        validateId(tenantId, INCORRECT_TENANT_ID + tenantId);
+        validateId(customerId, INCORRECT_CUSTOMER_ID + customerId);
+        return alarmDao.findAlarmDataByQueryForEntities(tenantId, customerId, query, orderedEntityIds);
+    }
+
+    @Override
+    public AlarmOperationResult deleteAlarm(TenantId tenantId, AlarmId alarmId) {
         try {
             log.debug("Deleting Alarm Id: {}", alarmId);
             Alarm alarm = alarmDao.findAlarmByIdAsync(tenantId, alarmId.getId()).get();
             if (alarm == null) {
-                return false;
+                return new AlarmOperationResult(alarm, false);
             }
+            AlarmOperationResult result = new AlarmOperationResult(alarm, true, new ArrayList<>(getPropagationEntityIds(alarm)));
             deleteEntityRelations(tenantId, alarm.getId());
-            return alarmDao.deleteAlarm(tenantId, alarm);
+            alarmDao.deleteAlarm(tenantId, alarm);
+            return result;
         } catch (ExecutionException | InterruptedException e) {
             throw new RuntimeException(e);
         }
     }
 
-    private Alarm createAlarm(Alarm alarm) throws InterruptedException, ExecutionException {
+    private AlarmOperationResult createAlarm(Alarm alarm) throws InterruptedException, ExecutionException {
         log.debug("New Alarm : {}", alarm);
         Alarm saved = alarmDao.save(alarm.getTenantId(), alarm);
-        createAlarmRelations(saved);
-        return saved;
+        List<EntityId> propagatedEntitiesList = createAlarmRelations(saved);
+        return new AlarmOperationResult(saved, true, true, propagatedEntitiesList);
     }
 
-    private void createAlarmRelations(Alarm alarm) throws InterruptedException, ExecutionException {
+    private List<EntityId> createAlarmRelations(Alarm alarm) throws InterruptedException, ExecutionException {
+        List<EntityId> propagatedEntitiesList;
         if (alarm.isPropagate()) {
-            List<EntityId> parentEntities = getParentEntities(alarm);
+            Set<EntityId> parentEntities = getParentEntities(alarm);
+            propagatedEntitiesList = new ArrayList<>(parentEntities.size() + 1);
             for (EntityId parentId : parentEntities) {
-                createAlarmRelation(alarm.getTenantId(), parentId, alarm.getId(), alarm.getStatus(), true);
+                propagatedEntitiesList.add(parentId);
+                createAlarmRelation(alarm.getTenantId(), parentId, alarm.getId());
             }
+            propagatedEntitiesList.add(alarm.getOriginator());
+        } else {
+            propagatedEntitiesList = Collections.singletonList(alarm.getOriginator());
         }
-        createAlarmRelation(alarm.getTenantId(), alarm.getOriginator(), alarm.getId(), alarm.getStatus(), true);
+        return propagatedEntitiesList;
     }
 
-    private List<EntityId> getParentEntities(Alarm alarm) throws InterruptedException, ExecutionException {
+    private Set<EntityId> getParentEntities(Alarm alarm) throws InterruptedException, ExecutionException {
         EntityRelationsQuery query = new EntityRelationsQuery();
+        //TODO 3.1: @dlandiak we need to fetch max 3 levels and then fetch more if needed and there is at least one non-duplicate.
         RelationsSearchParameters parameters = new RelationsSearchParameters(alarm.getOriginator(), EntitySearchDirection.TO, Integer.MAX_VALUE, false);
         query.setParameters(parameters);
         List<String> propagateRelationTypes = alarm.getPropagateRelationTypes();
@@ -164,15 +196,15 @@ public class BaseAlarmService extends AbstractEntityService implements AlarmServ
         if (!CollectionUtils.isEmpty(propagateRelationTypes)) {
             relations = relations.filter(entityRelation -> propagateRelationTypes.contains(entityRelation.getType()));
         }
-        return relations.map(EntityRelation::getFrom).collect(Collectors.toList());
+        return relations.map(EntityRelation::getFrom).collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
-    private ListenableFuture<Alarm> updateAlarm(Alarm update) {
+    private ListenableFuture<AlarmOperationResult> updateAlarm(Alarm update) {
         alarmDataValidator.validate(update, Alarm::getTenantId);
-        return getAndUpdate(update.getTenantId(), update.getId(), new Function<Alarm, Alarm>() {
+        return getAndUpdate(update.getTenantId(), update.getId(), new Function<Alarm, AlarmOperationResult>() {
             @Nullable
             @Override
-            public Alarm apply(@Nullable Alarm alarm) {
+            public AlarmOperationResult apply(@Nullable Alarm alarm) {
                 if (alarm == null) {
                     return null;
                 } else {
@@ -182,54 +214,52 @@ public class BaseAlarmService extends AbstractEntityService implements AlarmServ
         });
     }
 
-    private Alarm updateAlarm(Alarm oldAlarm, Alarm newAlarm) {
-        AlarmStatus oldStatus = oldAlarm.getStatus();
-        AlarmStatus newStatus = newAlarm.getStatus();
+    private AlarmOperationResult updateAlarm(Alarm oldAlarm, Alarm newAlarm) {
         boolean oldPropagate = oldAlarm.isPropagate();
         boolean newPropagate = newAlarm.isPropagate();
         Alarm result = alarmDao.save(newAlarm.getTenantId(), merge(oldAlarm, newAlarm));
+        List<EntityId> propagatedEntitiesList;
         if (!oldPropagate && newPropagate) {
             try {
-                createAlarmRelations(result);
+                propagatedEntitiesList = createAlarmRelations(result);
             } catch (InterruptedException | ExecutionException e) {
                 log.warn("Failed to update alarm relations [{}]", result, e);
                 throw new RuntimeException(e);
             }
-        } else if (oldStatus != newStatus) {
-            updateRelations(oldAlarm, oldStatus, newStatus);
+        } else {
+            propagatedEntitiesList = new ArrayList<>(getPropagationEntityIds(result));
         }
-        return result;
+        return new AlarmOperationResult(result, true, propagatedEntitiesList);
     }
 
     @Override
-    public ListenableFuture<Boolean> ackAlarm(TenantId tenantId, AlarmId alarmId, long ackTime) {
-        return getAndUpdate(tenantId, alarmId, new Function<Alarm, Boolean>() {
+    public ListenableFuture<AlarmOperationResult> ackAlarm(TenantId tenantId, AlarmId alarmId, long ackTime) {
+        return getAndUpdate(tenantId, alarmId, new Function<Alarm, AlarmOperationResult>() {
             @Nullable
             @Override
-            public Boolean apply(@Nullable Alarm alarm) {
+            public AlarmOperationResult apply(@Nullable Alarm alarm) {
                 if (alarm == null || alarm.getStatus().isAck()) {
-                    return false;
+                    return new AlarmOperationResult(alarm, false);
                 } else {
                     AlarmStatus oldStatus = alarm.getStatus();
                     AlarmStatus newStatus = oldStatus.isCleared() ? AlarmStatus.CLEARED_ACK : AlarmStatus.ACTIVE_ACK;
                     alarm.setStatus(newStatus);
                     alarm.setAckTs(ackTime);
-                    alarmDao.save(alarm.getTenantId(), alarm);
-                    updateRelations(alarm, oldStatus, newStatus);
-                    return true;
+                    alarm = alarmDao.save(alarm.getTenantId(), alarm);
+                    return new AlarmOperationResult(alarm, true, new ArrayList<>(getPropagationEntityIds(alarm)));
                 }
             }
         });
     }
 
     @Override
-    public ListenableFuture<Boolean> clearAlarm(TenantId tenantId, AlarmId alarmId, JsonNode details, long clearTime) {
-        return getAndUpdate(tenantId, alarmId, new Function<Alarm, Boolean>() {
+    public ListenableFuture<AlarmOperationResult> clearAlarm(TenantId tenantId, AlarmId alarmId, JsonNode details, long clearTime) {
+        return getAndUpdate(tenantId, alarmId, new Function<Alarm, AlarmOperationResult>() {
             @Nullable
             @Override
-            public Boolean apply(@Nullable Alarm alarm) {
+            public AlarmOperationResult apply(@Nullable Alarm alarm) {
                 if (alarm == null || alarm.getStatus().isCleared()) {
-                    return false;
+                    return new AlarmOperationResult(alarm, false);
                 } else {
                     AlarmStatus oldStatus = alarm.getStatus();
                     AlarmStatus newStatus = oldStatus.isAck() ? AlarmStatus.CLEARED_ACK : AlarmStatus.CLEARED_UNACK;
@@ -238,9 +268,8 @@ public class BaseAlarmService extends AbstractEntityService implements AlarmServ
                     if (details != null) {
                         alarm.setDetails(details);
                     }
-                    alarmDao.save(alarm.getTenantId(), alarm);
-                    updateRelations(alarm, oldStatus, newStatus);
-                    return true;
+                    alarm = alarmDao.save(alarm.getTenantId(), alarm);
+                    return new AlarmOperationResult(alarm, true, new ArrayList<>(getPropagationEntityIds(alarm)));
                 }
             }
         });
@@ -264,92 +293,59 @@ public class BaseAlarmService extends AbstractEntityService implements AlarmServ
                             entityService.fetchEntityNameAsync(tenantId, alarmInfo.getOriginator()), originatorName -> {
                                 alarmInfo.setOriginatorName(originatorName);
                                 return alarmInfo;
-                            }
-                    );
-                });
+                            }, MoreExecutors.directExecutor());
+                }, MoreExecutors.directExecutor());
     }
 
     @Override
-    public ListenableFuture<TimePageData<AlarmInfo>> findAlarms(TenantId tenantId, AlarmQuery query) {
-        ListenableFuture<List<AlarmInfo>> alarms = alarmDao.findAlarms(tenantId, query);
+    public ListenableFuture<PageData<AlarmInfo>> findAlarms(TenantId tenantId, AlarmQuery query) {
+        PageData<AlarmInfo> alarms = alarmDao.findAlarms(tenantId, query);
         if (query.getFetchOriginator() != null && query.getFetchOriginator().booleanValue()) {
-            alarms = Futures.transformAsync(alarms, input -> {
-                List<ListenableFuture<AlarmInfo>> alarmFutures = new ArrayList<>(input.size());
-                for (AlarmInfo alarmInfo : input) {
-                    alarmFutures.add(Futures.transform(
-                            entityService.fetchEntityNameAsync(tenantId, alarmInfo.getOriginator()), originatorName -> {
-                                if (originatorName == null) {
-                                    originatorName = "Deleted";
-                                }
-                                alarmInfo.setOriginatorName(originatorName);
-                                return alarmInfo;
-                            }
-                    ));
-                }
-                return Futures.successfulAsList(alarmFutures);
-            });
+            return fetchAlarmsOriginators(tenantId, alarms);
         }
-        return Futures.transform(alarms, new Function<List<AlarmInfo>, TimePageData<AlarmInfo>>() {
-            @Nullable
-            @Override
-            public TimePageData<AlarmInfo> apply(@Nullable List<AlarmInfo> alarms) {
-                return new TimePageData<>(alarms, query.getPageLink());
-            }
-        });
+        return Futures.immediateFuture(alarms);
+    }
+
+    @Override
+    public ListenableFuture<PageData<AlarmInfo>> findCustomerAlarms(TenantId tenantId, CustomerId customerId, AlarmQuery query) {
+        PageData<AlarmInfo> alarms = alarmDao.findCustomerAlarms(tenantId, customerId, query);
+        if (query.getFetchOriginator() != null && query.getFetchOriginator().booleanValue()) {
+            return fetchAlarmsOriginators(tenantId, alarms);
+        }
+        return Futures.immediateFuture(alarms);
+    }
+
+    private ListenableFuture<PageData<AlarmInfo>> fetchAlarmsOriginators(TenantId tenantId, PageData<AlarmInfo> alarms) {
+        List<ListenableFuture<AlarmInfo>> alarmFutures = new ArrayList<>(alarms.getData().size());
+        for (AlarmInfo alarmInfo : alarms.getData()) {
+            alarmFutures.add(Futures.transform(
+                    entityService.fetchEntityNameAsync(tenantId, alarmInfo.getOriginator()), originatorName -> {
+                        if (originatorName == null) {
+                            originatorName = "Deleted";
+                        }
+                        alarmInfo.setOriginatorName(originatorName);
+                        return alarmInfo;
+                    }, MoreExecutors.directExecutor()
+            ));
+        }
+        return Futures.transform(Futures.successfulAsList(alarmFutures),
+                alarmInfos -> new PageData<>(alarmInfos, alarms.getTotalPages(), alarms.getTotalElements(),
+                        alarms.hasNext()), MoreExecutors.directExecutor());
     }
 
     @Override
     public AlarmSeverity findHighestAlarmSeverity(TenantId tenantId, EntityId entityId, AlarmSearchStatus alarmSearchStatus,
                                                   AlarmStatus alarmStatus) {
-        TimePageLink nextPageLink = new TimePageLink(100);
-        boolean hasNext = true;
-        AlarmSeverity highestSeverity = null;
-        AlarmQuery query;
-        while (hasNext && AlarmSeverity.CRITICAL != highestSeverity) {
-            query = new AlarmQuery(entityId, nextPageLink, alarmSearchStatus, alarmStatus, false);
-            List<AlarmInfo> alarms;
-            try {
-                alarms = alarmDao.findAlarms(tenantId, query).get();
-            } catch (ExecutionException | InterruptedException e) {
-                log.warn("Failed to find highest alarm severity. EntityId: [{}], AlarmSearchStatus: [{}], AlarmStatus: [{}]",
-                        entityId, alarmSearchStatus, alarmStatus);
-                throw new RuntimeException(e);
-            }
-            hasNext = alarms.size() == nextPageLink.getLimit();
-            if (hasNext) {
-                nextPageLink = new TimePageData<>(alarms, nextPageLink).getNextPageLink();
-            }
-            AlarmSeverity severity = detectHighestSeverity(alarms);
-            if (severity == null) {
-                continue;
-            }
-            if (severity == AlarmSeverity.CRITICAL || highestSeverity == null) {
-                highestSeverity = severity;
-            } else {
-                highestSeverity = highestSeverity.compareTo(severity) < 0 ? highestSeverity : severity;
-            }
+        Set<AlarmStatus> statusList = null;
+        if (alarmSearchStatus != null) {
+            statusList = alarmSearchStatus.getStatuses();
+        } else if (alarmStatus != null) {
+            statusList = Collections.singleton(alarmStatus);
         }
-        return highestSeverity;
-    }
 
-    private AlarmSeverity detectHighestSeverity(List<AlarmInfo> alarms) {
-        if (!alarms.isEmpty()) {
-            List<AlarmInfo> sorted = new ArrayList(alarms);
-            sorted.sort(Comparator.comparing(Alarm::getSeverity));
-            return sorted.get(0).getSeverity();
-        } else {
-            return null;
-        }
-    }
+        Set<AlarmSeverity> alarmSeverities = alarmDao.findAlarmSeverities(tenantId, entityId, statusList);
 
-    private void deleteRelation(TenantId tenantId, EntityRelation alarmRelation) {
-        log.debug("Deleting Alarm relation: {}", alarmRelation);
-        relationService.deleteRelation(tenantId, alarmRelation);
-    }
-
-    private void createRelation(TenantId tenantId, EntityRelation alarmRelation) {
-        log.debug("Creating Alarm relation: {}", alarmRelation);
-        relationService.saveRelation(tenantId, alarmRelation);
+        return alarmSeverities.stream().min(AlarmSeverity::compareTo).orElse(null);
     }
 
     private Alarm merge(Alarm existing, Alarm alarm) {
@@ -368,6 +364,7 @@ public class BaseAlarmService extends AbstractEntityService implements AlarmServ
         existing.setStatus(alarm.getStatus());
         existing.setSeverity(alarm.getSeverity());
         existing.setDetails(alarm.getDetails());
+        existing.setCustomerId(alarm.getCustomerId());
         existing.setPropagate(existing.isPropagate() || alarm.isPropagate());
         List<String> existingPropagateRelationTypes = existing.getPropagateRelationTypes();
         List<String> newRelationTypes = alarm.getPropagateRelationTypes();
@@ -383,43 +380,19 @@ public class BaseAlarmService extends AbstractEntityService implements AlarmServ
         return existing;
     }
 
-    private void updateRelations(Alarm alarm, AlarmStatus oldStatus, AlarmStatus newStatus) {
-        try {
-            List<EntityRelation> relations = relationService.findByToAsync(alarm.getTenantId(), alarm.getId(), RelationTypeGroup.ALARM).get();
-
-            List<String> propagateRelationTypes = alarm.getPropagateRelationTypes();
-            Stream<EntityRelation> relationStream = relations.stream();
-            if (!CollectionUtils.isEmpty(propagateRelationTypes)) {
-                relationStream = relationStream.filter(entityRelation -> propagateRelationTypes.contains(entityRelation.getType()));
-            }
-            Set<EntityId> parents = relationStream.map(EntityRelation::getFrom).collect(Collectors.toSet());
-            for (EntityId parentId : parents) {
-                updateAlarmRelation(alarm.getTenantId(), parentId, alarm.getId(), oldStatus, newStatus);
-            }
-        } catch (ExecutionException | InterruptedException e) {
-            log.warn("[{}] Failed to update relations. Old status: [{}], New status: [{}]", alarm.getId(), oldStatus, newStatus);
-            throw new RuntimeException(e);
+    private Set<EntityId> getPropagationEntityIds(Alarm alarm) {
+        if (alarm.isPropagate()) {
+            List<EntityRelation> relations = relationService.findByTo(alarm.getTenantId(), alarm.getId(), RelationTypeGroup.ALARM);
+            Set<EntityId> propagationEntityIds = relations.stream().map(EntityRelation::getFrom).collect(Collectors.toSet());
+            propagationEntityIds.add(alarm.getOriginator());
+            return propagationEntityIds;
+        } else {
+            return Collections.singleton(alarm.getOriginator());
         }
     }
 
-    private void createAlarmRelation(TenantId tenantId, EntityId entityId, EntityId alarmId, AlarmStatus status, boolean createAnyRelation) {
-        if (createAnyRelation) {
-            createRelation(tenantId, new EntityRelation(entityId, alarmId, ALARM_RELATION_PREFIX + AlarmSearchStatus.ANY.name(), RelationTypeGroup.ALARM));
-        }
-        createRelation(tenantId, new EntityRelation(entityId, alarmId, ALARM_RELATION_PREFIX + status.name(), RelationTypeGroup.ALARM));
-        createRelation(tenantId, new EntityRelation(entityId, alarmId, ALARM_RELATION_PREFIX + status.getClearSearchStatus().name(), RelationTypeGroup.ALARM));
-        createRelation(tenantId, new EntityRelation(entityId, alarmId, ALARM_RELATION_PREFIX + status.getAckSearchStatus().name(), RelationTypeGroup.ALARM));
-    }
-
-    private void deleteAlarmRelation(TenantId tenantId, EntityId entityId, EntityId alarmId, AlarmStatus status) {
-        deleteRelation(tenantId, new EntityRelation(entityId, alarmId, ALARM_RELATION_PREFIX + status.name(), RelationTypeGroup.ALARM));
-        deleteRelation(tenantId, new EntityRelation(entityId, alarmId, ALARM_RELATION_PREFIX + status.getClearSearchStatus().name(), RelationTypeGroup.ALARM));
-        deleteRelation(tenantId, new EntityRelation(entityId, alarmId, ALARM_RELATION_PREFIX + status.getAckSearchStatus().name(), RelationTypeGroup.ALARM));
-    }
-
-    private void updateAlarmRelation(TenantId tenantId, EntityId entityId, EntityId alarmId, AlarmStatus oldStatus, AlarmStatus newStatus) {
-        deleteAlarmRelation(tenantId, entityId, alarmId, oldStatus);
-        createAlarmRelation(tenantId, entityId, alarmId, newStatus, false);
+    private void createAlarmRelation(TenantId tenantId, EntityId entityId, EntityId alarmId) {
+        createRelation(tenantId, new EntityRelation(entityId, alarmId, AlarmSearchStatus.ANY.name(), RelationTypeGroup.ALARM));
     }
 
     private <T> ListenableFuture<T> getAndUpdate(TenantId tenantId, AlarmId alarmId, Function<Alarm, T> function) {

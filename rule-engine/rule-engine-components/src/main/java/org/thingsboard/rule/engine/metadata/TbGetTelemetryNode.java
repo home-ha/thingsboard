@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,12 @@ package org.thingsboard.rule.engine.metadata;
 
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.json.JsonWriteFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.gson.JsonParseException;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -39,12 +41,12 @@ import org.thingsboard.server.common.data.kv.TsKvEntry;
 import org.thingsboard.server.common.data.plugin.ComponentType;
 import org.thingsboard.server.common.msg.TbMsg;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
-import static org.thingsboard.rule.engine.api.TbRelationTypes.SUCCESS;
 import static org.thingsboard.rule.engine.metadata.TbGetTelemetryNodeConfiguration.FETCH_MODE_ALL;
 import static org.thingsboard.rule.engine.metadata.TbGetTelemetryNodeConfiguration.FETCH_MODE_FIRST;
 import static org.thingsboard.rule.engine.metadata.TbGetTelemetryNodeConfiguration.MAX_FETCH_SIZE;
@@ -88,7 +90,7 @@ public class TbGetTelemetryNode implements TbNode {
             orderByFetchAll = ASC_ORDER;
         }
         mapper = new ObjectMapper();
-        mapper.configure(JsonGenerator.Feature.QUOTE_FIELD_NAMES, false);
+        mapper.configure(JsonWriteFeature.QUOTE_FIELD_NAMES.mappedFeature(), false);
         mapper.configure(JsonParser.Feature.ALLOW_UNQUOTED_FIELD_NAMES, true);
     }
 
@@ -101,11 +103,11 @@ public class TbGetTelemetryNode implements TbNode {
                 if (config.isUseMetadataIntervalPatterns()) {
                     checkMetadataKeyPatterns(msg);
                 }
-                ListenableFuture<List<TsKvEntry>> list = ctx.getTimeseriesService().findAll(ctx.getTenantId(), msg.getOriginator(), buildQueries(msg));
+                List<String> keys = TbNodeUtils.processPatterns(tsKeyNames, msg);
+                ListenableFuture<List<TsKvEntry>> list = ctx.getTimeseriesService().findAll(ctx.getTenantId(), msg.getOriginator(), buildQueries(msg, keys));
                 DonAsynchron.withCallback(list, data -> {
-                    process(data, msg);
-                    TbMsg newMsg = ctx.transformMsg(msg, msg.getType(), msg.getOriginator(), msg.getMetaData(), msg.getData());
-                    ctx.tellNext(newMsg, SUCCESS);
+                    process(data, msg, keys);
+                    ctx.tellSuccess(ctx.transformMsg(msg, msg.getType(), msg.getOriginator(), msg.getMetaData(), msg.getData()));
                 }, error -> ctx.tellFailure(msg, error), ctx.getDbCallbackExecutor());
             } catch (Exception e) {
                 ctx.tellFailure(msg, e);
@@ -117,8 +119,8 @@ public class TbGetTelemetryNode implements TbNode {
     public void destroy() {
     }
 
-    private List<ReadTsKvQuery> buildQueries(TbMsg msg) {
-        return tsKeyNames.stream()
+    private List<ReadTsKvQuery> buildQueries(TbMsg msg, List<String> keys) {
+        return keys.stream()
                 .map(key -> new BaseReadTsKvQuery(key, getInterval(msg).getStartTs(), getInterval(msg).getEndTs(), 1, limit, NONE, getOrderBy()))
                 .collect(Collectors.toList());
     }
@@ -134,7 +136,7 @@ public class TbGetTelemetryNode implements TbNode {
         }
     }
 
-    private void process(List<TsKvEntry> entries, TbMsg msg) {
+    private void process(List<TsKvEntry> entries, TbMsg msg, List<String> keys) {
         ObjectNode resultNode = mapper.createObjectNode();
         if (FETCH_MODE_ALL.equals(fetchMode)) {
             entries.forEach(entry -> processArray(resultNode, entry));
@@ -142,7 +144,7 @@ public class TbGetTelemetryNode implements TbNode {
             entries.forEach(entry -> processSingle(resultNode, entry));
         }
 
-        for (String key : tsKeyNames) {
+        for (String key : keys) {
             if (resultNode.has(key)) {
                 msg.getMetaData().putValue(key, resultNode.get(key).toString());
             }
@@ -180,6 +182,13 @@ public class TbGetTelemetryNode implements TbNode {
             case DOUBLE:
                 obj.put("value", entry.getDoubleValue().get());
                 break;
+            case JSON:
+                try {
+                    obj.set("value", mapper.readTree(entry.getJsonValue().get()));
+                } catch (IOException e) {
+                    throw new JsonParseException("Can't parse jsonValue: " + entry.getJsonValue().get(), e);
+                }
+                break;
         }
         return obj;
     }
@@ -188,10 +197,10 @@ public class TbGetTelemetryNode implements TbNode {
         Interval interval = new Interval();
         if (config.isUseMetadataIntervalPatterns()) {
             if (isParsable(msg, config.getStartIntervalPattern())) {
-                interval.setStartTs(Long.parseLong(TbNodeUtils.processPattern(config.getStartIntervalPattern(), msg.getMetaData())));
+                interval.setStartTs(Long.parseLong(TbNodeUtils.processPattern(config.getStartIntervalPattern(), msg)));
             }
             if (isParsable(msg, config.getEndIntervalPattern())) {
-                interval.setEndTs(Long.parseLong(TbNodeUtils.processPattern(config.getEndIntervalPattern(), msg.getMetaData())));
+                interval.setEndTs(Long.parseLong(TbNodeUtils.processPattern(config.getEndIntervalPattern(), msg)));
             }
         } else {
             long ts = System.currentTimeMillis();
@@ -202,7 +211,7 @@ public class TbGetTelemetryNode implements TbNode {
     }
 
     private boolean isParsable(TbMsg msg, String pattern) {
-        return NumberUtils.isParsable(TbNodeUtils.processPattern(pattern, msg.getMetaData()));
+        return NumberUtils.isParsable(TbNodeUtils.processPattern(pattern, msg));
     }
 
     private void checkMetadataKeyPatterns(TbMsg msg) {

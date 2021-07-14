@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
  */
 package org.thingsboard.server.dao.model.sql;
 
-import com.datastax.driver.core.utils.UUIDs;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import org.thingsboard.server.common.data.id.UserCredentialsId;
@@ -28,6 +27,7 @@ import org.thingsboard.server.dao.model.ModelConstants;
 import javax.persistence.Column;
 import javax.persistence.Entity;
 import javax.persistence.Table;
+import java.util.UUID;
 
 @Data
 @EqualsAndHashCode(callSuper = true)
@@ -36,7 +36,7 @@ import javax.persistence.Table;
 public final class UserCredentialsEntity extends BaseSqlEntity<UserCredentials> implements BaseEntity<UserCredentials> {
 
     @Column(name = ModelConstants.USER_CREDENTIALS_USER_ID_PROPERTY, unique = true)
-    private String userId;
+    private UUID userId;
 
     @Column(name = ModelConstants.USER_CREDENTIALS_ENABLED_PROPERTY)
     private boolean enabled;
@@ -56,10 +56,11 @@ public final class UserCredentialsEntity extends BaseSqlEntity<UserCredentials> 
 
     public UserCredentialsEntity(UserCredentials userCredentials) {
         if (userCredentials.getId() != null) {
-            this.setId(userCredentials.getId().getId());
+            this.setUuid(userCredentials.getId().getId());
         }
+        this.setCreatedTime(userCredentials.getCreatedTime());
         if (userCredentials.getUserId() != null) {
-            this.userId = toString(userCredentials.getUserId().getId());
+            this.userId = userCredentials.getUserId().getId();
         }
         this.enabled = userCredentials.isEnabled();
         this.password = userCredentials.getPassword();
@@ -69,10 +70,10 @@ public final class UserCredentialsEntity extends BaseSqlEntity<UserCredentials> 
 
     @Override
     public UserCredentials toData() {
-        UserCredentials userCredentials = new UserCredentials(new UserCredentialsId(getId()));
-        userCredentials.setCreatedTime(UUIDs.unixTimestamp(getId()));
+        UserCredentials userCredentials = new UserCredentials(new UserCredentialsId(this.getUuid()));
+        userCredentials.setCreatedTime(createdTime);
         if (userId != null) {
-            userCredentials.setUserId(new UserId(toUUID(userId)));
+            userCredentials.setUserId(new UserId(userId));
         }
         userCredentials.setEnabled(enabled);
         userCredentials.setPassword(password);

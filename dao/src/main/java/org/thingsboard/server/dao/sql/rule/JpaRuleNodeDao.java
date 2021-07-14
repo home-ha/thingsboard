@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,23 +23,23 @@ import org.thingsboard.server.common.data.rule.RuleNode;
 import org.thingsboard.server.dao.model.sql.RuleNodeEntity;
 import org.thingsboard.server.dao.rule.RuleNodeDao;
 import org.thingsboard.server.dao.sql.JpaAbstractSearchTextDao;
-import org.thingsboard.server.dao.util.SqlDao;
+
+import java.util.UUID;
 
 @Slf4j
 @Component
-@SqlDao
 public class JpaRuleNodeDao extends JpaAbstractSearchTextDao<RuleNodeEntity, RuleNode> implements RuleNodeDao {
 
     @Autowired
     private RuleNodeRepository ruleNodeRepository;
 
     @Override
-    protected Class getEntityClass() {
+    protected Class<RuleNodeEntity> getEntityClass() {
         return RuleNodeEntity.class;
     }
 
     @Override
-    protected CrudRepository getCrudRepository() {
+    protected CrudRepository<RuleNodeEntity, UUID> getCrudRepository() {
         return ruleNodeRepository;
     }
 

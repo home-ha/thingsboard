@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright © 2016-2019 The Thingsboard Authors
+# Copyright © 2016-2021 The Thingsboard Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,4 +15,18 @@
 # limitations under the License.
 #
 
-service cassandra stop
+CASSANDRA_PID=$(ps aux | grep '[c]assandra' | awk '{print $2}')
+
+echo "Stopping cassandra (pid ${CASSANDRA_PID})."
+kill -SIGTERM ${CASSANDRA_PID}
+
+PG_CTL=$(find /usr/lib/postgresql/ -name pg_ctl)
+echo "Stopping postgres."
+${PG_CTL} stop
+
+while [ -e /proc/${CASSANDRA_PID} ]
+do
+    echo "Waiting for cassandra to stop."
+    sleep 2
+done
+echo "Cassandra was stopped."

@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,11 +15,23 @@
  */
 package org.thingsboard.server.service.telemetry.cmd;
 
+import lombok.Data;
+import org.thingsboard.server.service.telemetry.cmd.v1.AttributesSubscriptionCmd;
+import org.thingsboard.server.service.telemetry.cmd.v1.GetHistoryCmd;
+import org.thingsboard.server.service.telemetry.cmd.v1.TimeseriesSubscriptionCmd;
+import org.thingsboard.server.service.telemetry.cmd.v2.AlarmDataCmd;
+import org.thingsboard.server.service.telemetry.cmd.v2.AlarmDataUnsubscribeCmd;
+import org.thingsboard.server.service.telemetry.cmd.v2.EntityCountCmd;
+import org.thingsboard.server.service.telemetry.cmd.v2.EntityCountUnsubscribeCmd;
+import org.thingsboard.server.service.telemetry.cmd.v2.EntityDataCmd;
+import org.thingsboard.server.service.telemetry.cmd.v2.EntityDataUnsubscribeCmd;
+
 import java.util.List;
 
 /**
  * @author Andrew Shvayka
  */
+@Data
 public class TelemetryPluginCmdsWrapper {
 
     private List<AttributesSubscriptionCmd> attrSubCmds;
@@ -28,31 +40,16 @@ public class TelemetryPluginCmdsWrapper {
 
     private List<GetHistoryCmd> historyCmds;
 
-    public TelemetryPluginCmdsWrapper() {
-        super();
-    }
+    private List<EntityDataCmd> entityDataCmds;
 
-    public List<AttributesSubscriptionCmd> getAttrSubCmds() {
-        return attrSubCmds;
-    }
+    private List<EntityDataUnsubscribeCmd> entityDataUnsubscribeCmds;
 
-    public void setAttrSubCmds(List<AttributesSubscriptionCmd> attrSubCmds) {
-        this.attrSubCmds = attrSubCmds;
-    }
+    private List<AlarmDataCmd> alarmDataCmds;
 
-    public List<TimeseriesSubscriptionCmd> getTsSubCmds() {
-        return tsSubCmds;
-    }
+    private List<AlarmDataUnsubscribeCmd> alarmDataUnsubscribeCmds;
 
-    public void setTsSubCmds(List<TimeseriesSubscriptionCmd> tsSubCmds) {
-        this.tsSubCmds = tsSubCmds;
-    }
+    private List<EntityCountCmd> entityCountCmds;
 
-    public List<GetHistoryCmd> getHistoryCmds() {
-        return historyCmds;
-    }
+    private List<EntityCountUnsubscribeCmd> entityCountUnsubscribeCmds;
 
-    public void setHistoryCmds(List<GetHistoryCmd> historyCmds) {
-        this.historyCmds = historyCmds;
-    }
 }

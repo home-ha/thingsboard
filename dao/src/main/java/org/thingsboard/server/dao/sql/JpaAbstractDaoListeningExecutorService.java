@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,16 +15,33 @@
  */
 package org.thingsboard.server.dao.sql;
 
-import com.google.common.util.concurrent.ListeningExecutorService;
-import com.google.common.util.concurrent.MoreExecutors;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 
-import javax.annotation.PreDestroy;
-import java.util.concurrent.Executors;
+import javax.sql.DataSource;
+import java.sql.SQLException;
+import java.sql.SQLWarning;
+import java.sql.Statement;
 
+@Slf4j
 public abstract class JpaAbstractDaoListeningExecutorService {
 
     @Autowired
     protected JpaExecutorService service;
+
+    @Autowired
+    protected DataSource dataSource;
+
+    protected void printWarnings(Statement statement) throws SQLException {
+        SQLWarning warnings = statement.getWarnings();
+        if (warnings != null) {
+            log.debug("{}", warnings.getMessage());
+            SQLWarning nextWarning = warnings.getNextWarning();
+            while (nextWarning != null) {
+                log.debug("{}", nextWarning.getMessage());
+                nextWarning = nextWarning.getNextWarning();
+            }
+        }
+    }
 
 }

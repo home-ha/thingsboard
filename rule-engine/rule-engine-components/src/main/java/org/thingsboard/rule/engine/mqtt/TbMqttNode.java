@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,27 +16,29 @@
 package org.thingsboard.rule.engine.mqtt;
 
 import io.netty.buffer.Unpooled;
-import io.netty.channel.EventLoopGroup;
-import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.handler.codec.mqtt.MqttQoS;
 import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.util.concurrent.Future;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.util.StringUtils;
 import org.thingsboard.mqtt.MqttClient;
 import org.thingsboard.mqtt.MqttClientConfig;
 import org.thingsboard.mqtt.MqttConnectResult;
-import org.springframework.util.StringUtils;
+import org.thingsboard.rule.engine.api.RuleNode;
+import org.thingsboard.rule.engine.api.TbContext;
+import org.thingsboard.rule.engine.api.TbNode;
+import org.thingsboard.rule.engine.api.TbNodeConfiguration;
+import org.thingsboard.rule.engine.api.TbNodeException;
 import org.thingsboard.rule.engine.api.util.TbNodeUtils;
-import org.thingsboard.rule.engine.api.*;
+import org.thingsboard.rule.engine.credentials.BasicCredentials;
+import org.thingsboard.rule.engine.credentials.ClientCredentials;
+import org.thingsboard.rule.engine.credentials.CredentialsType;
 import org.thingsboard.server.common.data.plugin.ComponentType;
 import org.thingsboard.server.common.msg.TbMsg;
 import org.thingsboard.server.common.msg.TbMsgMetaData;
 
 import javax.net.ssl.SSLException;
 import java.nio.charset.Charset;
-import java.util.Optional;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -47,7 +49,7 @@ import java.util.concurrent.TimeoutException;
         configClazz = TbMqttNodeConfiguration.class,
         nodeDescription = "Publish messages to the MQTT broker",
         nodeDetails = "Will publish message payload to the MQTT broker with QoS <b>AT_LEAST_ONCE</b>.",
-        uiResources = {"static/rulenode/rulenode-core-config.js", "static/rulenode/rulenode-core-config.css"},
+        uiResources = {"static/rulenode/rulenode-core-config.js"},
         configDirective = "tbActionNodeMqttConfig",
         icon = "call_split"
 )
@@ -57,14 +59,14 @@ public class TbMqttNode implements TbNode {
 
     private static final String ERROR = "error";
 
-    private TbMqttNodeConfiguration config;
+    protected TbMqttNodeConfiguration mqttNodeConfiguration;
 
-    private MqttClient mqttClient;
+    protected MqttClient mqttClient;
 
     @Override
     public void init(TbContext ctx, TbNodeConfiguration configuration) throws TbNodeException {
         try {
-            this.config = TbNodeUtils.convert(configuration, TbMqttNodeConfiguration.class);
+            this.mqttNodeConfiguration = TbNodeUtils.convert(configuration, TbMqttNodeConfiguration.class);
             this.mqttClient = initClient(ctx);
         } catch (Exception e) {
             throw new TbNodeException(e);
@@ -72,18 +74,18 @@ public class TbMqttNode implements TbNode {
     }
 
     @Override
-    public void onMsg(TbContext ctx, TbMsg msg) throws ExecutionException, InterruptedException, TbNodeException {
-        String topic = TbNodeUtils.processPattern(this.config.getTopicPattern(), msg.getMetaData());
+    public void onMsg(TbContext ctx, TbMsg msg) {
+        String topic = TbNodeUtils.processPattern(this.mqttNodeConfiguration.getTopicPattern(), msg);
         this.mqttClient.publish(topic, Unpooled.wrappedBuffer(msg.getData().getBytes(UTF8)), MqttQoS.AT_LEAST_ONCE)
                 .addListener(future -> {
-                    if (future.isSuccess()) {
-                        ctx.tellNext(msg, TbRelationTypes.SUCCESS);
-                    } else {
-                        TbMsg next = processException(ctx, msg, future.cause());
-                        ctx.tellFailure(next, future.cause());
-                    }
-                }
-        );
+                            if (future.isSuccess()) {
+                                ctx.tellSuccess(msg);
+                            } else {
+                                TbMsg next = processException(ctx, msg, future.cause());
+                                ctx.tellFailure(next, future.cause());
+                            }
+                        }
+                );
     }
 
     private TbMsg processException(TbContext ctx, TbMsg origMsg, Throwable e) {
@@ -99,41 +101,46 @@ public class TbMqttNode implements TbNode {
         }
     }
 
-    private MqttClient initClient(TbContext ctx) throws Exception {
-        Optional<SslContext> sslContextOpt = initSslContext();
-        MqttClientConfig config = sslContextOpt.isPresent() ? new MqttClientConfig(sslContextOpt.get()) : new MqttClientConfig();
-        if (!StringUtils.isEmpty(this.config.getClientId())) {
-            config.setClientId(this.config.getClientId());
+    protected MqttClient initClient(TbContext ctx) throws Exception {
+        MqttClientConfig config = new MqttClientConfig(getSslContext());
+        if (!StringUtils.isEmpty(this.mqttNodeConfiguration.getClientId())) {
+            config.setClientId(this.mqttNodeConfiguration.getClientId());
         }
-        config.setCleanSession(this.config.isCleanSession());
-        this.config.getCredentials().configure(config);
+        config.setCleanSession(this.mqttNodeConfiguration.isCleanSession());
+
+        prepareMqttClientConfig(config);
         MqttClient client = MqttClient.create(config, null);
         client.setEventLoop(ctx.getSharedEventLoop());
-        Future<MqttConnectResult> connectFuture = client.connect(this.config.getHost(), this.config.getPort());
+        Future<MqttConnectResult> connectFuture = client.connect(this.mqttNodeConfiguration.getHost(), this.mqttNodeConfiguration.getPort());
         MqttConnectResult result;
         try {
-            result = connectFuture.get(this.config.getConnectTimeoutSec(), TimeUnit.SECONDS);
+            result = connectFuture.get(this.mqttNodeConfiguration.getConnectTimeoutSec(), TimeUnit.SECONDS);
         } catch (TimeoutException ex) {
             connectFuture.cancel(true);
             client.disconnect();
-            String hostPort = this.config.getHost() + ":" + this.config.getPort();
+            String hostPort = this.mqttNodeConfiguration.getHost() + ":" + this.mqttNodeConfiguration.getPort();
             throw new RuntimeException(String.format("Failed to connect to MQTT broker at %s.", hostPort));
         }
         if (!result.isSuccess()) {
             connectFuture.cancel(true);
             client.disconnect();
-            String hostPort = this.config.getHost() + ":" + this.config.getPort();
+            String hostPort = this.mqttNodeConfiguration.getHost() + ":" + this.mqttNodeConfiguration.getPort();
             throw new RuntimeException(String.format("Failed to connect to MQTT broker at %s. Result code is: %s", hostPort, result.getReturnCode()));
         }
         return client;
     }
 
-    private Optional<SslContext> initSslContext() throws SSLException {
-        Optional<SslContext> result = this.config.getCredentials().initSslContext();
-        if (this.config.isSsl() && !result.isPresent()) {
-            result = Optional.of(SslContextBuilder.forClient().build());
+    protected void prepareMqttClientConfig(MqttClientConfig config) throws SSLException {
+        ClientCredentials credentials = this.mqttNodeConfiguration.getCredentials();
+        if (credentials.getType() == CredentialsType.BASIC) {
+            BasicCredentials basicCredentials = (BasicCredentials) credentials;
+            config.setUsername(basicCredentials.getUsername());
+            config.setPassword(basicCredentials.getPassword());
         }
-        return result;
+    }
+
+    private SslContext getSslContext() throws SSLException {
+        return this.mqttNodeConfiguration.isSsl() ? this.mqttNodeConfiguration.getCredentials().initSslContext() : null;
     }
 
 }

@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,9 @@ package org.thingsboard.server.dao.sql.rule;
 
 import org.springframework.data.repository.CrudRepository;
 import org.thingsboard.server.dao.model.sql.RuleNodeEntity;
-import org.thingsboard.server.dao.util.SqlDao;
 
-@SqlDao
-public interface RuleNodeRepository extends CrudRepository<RuleNodeEntity, String> {
+import java.util.UUID;
+
+public interface RuleNodeRepository extends CrudRepository<RuleNodeEntity, UUID> {
 
 }

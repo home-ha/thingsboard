@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@
 package org.thingsboard.server.service.security.device;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.thingsboard.server.common.data.security.DeviceCredentials;
 import org.thingsboard.server.common.data.security.DeviceCredentialsFilter;
@@ -24,16 +23,21 @@ import org.thingsboard.server.common.transport.auth.DeviceAuthResult;
 import org.thingsboard.server.common.transport.auth.DeviceAuthService;
 import org.thingsboard.server.dao.device.DeviceCredentialsService;
 import org.thingsboard.server.dao.device.DeviceService;
+import org.thingsboard.server.queue.util.TbCoreComponent;
 
 @Service
+@TbCoreComponent
 @Slf4j
 public class DefaultDeviceAuthService implements DeviceAuthService {
 
-    @Autowired
-    DeviceService deviceService;
+    private final DeviceService deviceService;
 
-    @Autowired
-    DeviceCredentialsService deviceCredentialsService;
+    private final DeviceCredentialsService deviceCredentialsService;
+
+    public DefaultDeviceAuthService(DeviceService deviceService, DeviceCredentialsService deviceCredentialsService) {
+        this.deviceService = deviceService;
+        this.deviceCredentialsService = deviceCredentialsService;
+    }
 
     @Override
     public DeviceAuthResult process(DeviceCredentialsFilter credentialsFilter) {
@@ -48,6 +52,8 @@ public class DefaultDeviceAuthService implements DeviceAuthService {
                         // primitive case;
                         return DeviceAuthResult.of(credentials.getDeviceId());
                     case X509_CERTIFICATE:
+                        return DeviceAuthResult.of(credentials.getDeviceId());
+                    case LWM2M_CREDENTIALS:
                         return DeviceAuthResult.of(credentials.getDeviceId());
                     default:
                         return DeviceAuthResult.of("Credentials Type is not supported yet!");

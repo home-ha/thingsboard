@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,23 +28,26 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.thingsboard.server.common.data.EntityType;
 import org.thingsboard.server.common.data.alarm.Alarm;
-import org.thingsboard.server.common.data.alarm.AlarmId;
 import org.thingsboard.server.common.data.alarm.AlarmInfo;
 import org.thingsboard.server.common.data.alarm.AlarmQuery;
 import org.thingsboard.server.common.data.alarm.AlarmSearchStatus;
 import org.thingsboard.server.common.data.alarm.AlarmSeverity;
 import org.thingsboard.server.common.data.alarm.AlarmStatus;
 import org.thingsboard.server.common.data.audit.ActionType;
+import org.thingsboard.server.common.data.edge.EdgeEventActionType;
 import org.thingsboard.server.common.data.exception.ThingsboardErrorCode;
 import org.thingsboard.server.common.data.exception.ThingsboardException;
+import org.thingsboard.server.common.data.id.AlarmId;
 import org.thingsboard.server.common.data.id.EntityId;
 import org.thingsboard.server.common.data.id.EntityIdFactory;
-import org.thingsboard.server.common.data.page.TimePageData;
+import org.thingsboard.server.common.data.page.PageData;
 import org.thingsboard.server.common.data.page.TimePageLink;
+import org.thingsboard.server.queue.util.TbCoreComponent;
 import org.thingsboard.server.service.security.permission.Operation;
 import org.thingsboard.server.service.security.permission.Resource;
 
 @RestController
+@TbCoreComponent
 @RequestMapping("/api")
 public class AlarmController extends BaseController {
 
@@ -82,12 +85,16 @@ public class AlarmController extends BaseController {
     public Alarm saveAlarm(@RequestBody Alarm alarm) throws ThingsboardException {
         try {
             alarm.setTenantId(getCurrentUser().getTenantId());
-            Operation operation = alarm.getId() == null ? Operation.CREATE : Operation.WRITE;
-            accessControlService.checkPermission(getCurrentUser(), Resource.ALARM, operation, alarm.getId(), alarm);
+
+            checkEntity(alarm.getId(), alarm, Resource.ALARM);
+
             Alarm savedAlarm = checkNotNull(alarmService.createOrUpdateAlarm(alarm));
-            logEntityAction(savedAlarm.getId(), savedAlarm,
+            logEntityAction(savedAlarm.getOriginator(), savedAlarm,
                     getCurrentUser().getCustomerId(),
                     alarm.getId() == null ? ActionType.ADDED : ActionType.UPDATED, null);
+
+            sendEntityNotificationMsg(getTenantId(), savedAlarm.getId(), alarm.getId() == null ? EdgeEventActionType.ADDED : EdgeEventActionType.UPDATED);
+
             return savedAlarm;
         } catch (Exception e) {
             logEntityAction(emptyId(EntityType.ALARM), alarm,
@@ -103,9 +110,15 @@ public class AlarmController extends BaseController {
         checkParameter(ALARM_ID, strAlarmId);
         try {
             AlarmId alarmId = new AlarmId(toUUID(strAlarmId));
-            checkAlarmId(alarmId, Operation.WRITE);
+            Alarm alarm = checkAlarmId(alarmId, Operation.WRITE);
+
+            logEntityAction(alarm.getOriginator(), alarm,
+                    getCurrentUser().getCustomerId(),
+                    ActionType.ALARM_DELETE, null);
+            sendEntityNotificationMsg(getTenantId(), alarmId, EdgeEventActionType.DELETED);
+
             return alarmService.deleteAlarm(getTenantId(), alarmId);
-        } catch (Exception e) {
+         } catch (Exception e) {
             throw handleException(e);
         }
     }
@@ -118,8 +131,13 @@ public class AlarmController extends BaseController {
         try {
             AlarmId alarmId = new AlarmId(toUUID(strAlarmId));
             Alarm alarm = checkAlarmId(alarmId, Operation.WRITE);
-            alarmService.ackAlarm(getCurrentUser().getTenantId(), alarmId, System.currentTimeMillis()).get();
-            logEntityAction(alarmId, alarm, getCurrentUser().getCustomerId(), ActionType.ALARM_ACK, null);
+            long ackTs = System.currentTimeMillis();
+            alarmService.ackAlarm(getCurrentUser().getTenantId(), alarmId, ackTs).get();
+            alarm.setAckTs(ackTs);
+            alarm.setStatus(alarm.getStatus().isCleared() ? AlarmStatus.CLEARED_ACK : AlarmStatus.ACTIVE_ACK);
+            logEntityAction(alarm.getOriginator(), alarm, getCurrentUser().getCustomerId(), ActionType.ALARM_ACK, null);
+
+            sendEntityNotificationMsg(getTenantId(), alarmId, EdgeEventActionType.ALARM_ACK);
         } catch (Exception e) {
             throw handleException(e);
         }
@@ -133,8 +151,13 @@ public class AlarmController extends BaseController {
         try {
             AlarmId alarmId = new AlarmId(toUUID(strAlarmId));
             Alarm alarm = checkAlarmId(alarmId, Operation.WRITE);
-            alarmService.clearAlarm(getCurrentUser().getTenantId(), alarmId, null, System.currentTimeMillis()).get();
-            logEntityAction(alarmId, alarm, getCurrentUser().getCustomerId(), ActionType.ALARM_CLEAR, null);
+            long clearTs = System.currentTimeMillis();
+            alarmService.clearAlarm(getCurrentUser().getTenantId(), alarmId, null, clearTs).get();
+            alarm.setClearTs(clearTs);
+            alarm.setStatus(alarm.getStatus().isAck() ? AlarmStatus.CLEARED_ACK : AlarmStatus.CLEARED_UNACK);
+            logEntityAction(alarm.getOriginator(), alarm, getCurrentUser().getCustomerId(), ActionType.ALARM_CLEAR, null);
+
+            sendEntityNotificationMsg(getTenantId(), alarmId, EdgeEventActionType.ALARM_CLEAR);
         } catch (Exception e) {
             throw handleException(e);
         }
@@ -143,16 +166,18 @@ public class AlarmController extends BaseController {
     @PreAuthorize("hasAnyAuthority('SYS_ADMIN', 'TENANT_ADMIN', 'CUSTOMER_USER')")
     @RequestMapping(value = "/alarm/{entityType}/{entityId}", method = RequestMethod.GET)
     @ResponseBody
-    public TimePageData<AlarmInfo> getAlarms(
+    public PageData<AlarmInfo> getAlarms(
             @PathVariable("entityType") String strEntityType,
             @PathVariable("entityId") String strEntityId,
             @RequestParam(required = false) String searchStatus,
             @RequestParam(required = false) String status,
-            @RequestParam int limit,
+            @RequestParam int pageSize,
+            @RequestParam int page,
+            @RequestParam(required = false) String textSearch,
+            @RequestParam(required = false) String sortProperty,
+            @RequestParam(required = false) String sortOrder,
             @RequestParam(required = false) Long startTime,
             @RequestParam(required = false) Long endTime,
-            @RequestParam(required = false, defaultValue = "false") boolean ascOrder,
-            @RequestParam(required = false) String offset,
             @RequestParam(required = false) Boolean fetchOriginator
     ) throws ThingsboardException {
         checkParameter("EntityId", strEntityId);
@@ -165,9 +190,44 @@ public class AlarmController extends BaseController {
                     "and 'status' can't be specified at the same time!", ThingsboardErrorCode.BAD_REQUEST_PARAMS);
         }
         checkEntityId(entityId, Operation.READ);
+        TimePageLink pageLink = createTimePageLink(pageSize, page, textSearch, sortProperty, sortOrder, startTime, endTime);
+
         try {
-            TimePageLink pageLink = createPageLink(limit, startTime, endTime, ascOrder, offset);
             return checkNotNull(alarmService.findAlarms(getCurrentUser().getTenantId(), new AlarmQuery(entityId, pageLink, alarmSearchStatus, alarmStatus, fetchOriginator)).get());
+        } catch (Exception e) {
+            throw handleException(e);
+        }
+    }
+
+    @PreAuthorize("hasAnyAuthority('SYS_ADMIN', 'TENANT_ADMIN', 'CUSTOMER_USER')")
+    @RequestMapping(value = "/alarms", method = RequestMethod.GET)
+    @ResponseBody
+    public PageData<AlarmInfo> getAllAlarms(
+            @RequestParam(required = false) String searchStatus,
+            @RequestParam(required = false) String status,
+            @RequestParam int pageSize,
+            @RequestParam int page,
+            @RequestParam(required = false) String textSearch,
+            @RequestParam(required = false) String sortProperty,
+            @RequestParam(required = false) String sortOrder,
+            @RequestParam(required = false) Long startTime,
+            @RequestParam(required = false) Long endTime,
+            @RequestParam(required = false) Boolean fetchOriginator
+    ) throws ThingsboardException {
+        AlarmSearchStatus alarmSearchStatus = StringUtils.isEmpty(searchStatus) ? null : AlarmSearchStatus.valueOf(searchStatus);
+        AlarmStatus alarmStatus = StringUtils.isEmpty(status) ? null : AlarmStatus.valueOf(status);
+        if (alarmSearchStatus != null && alarmStatus != null) {
+            throw new ThingsboardException("Invalid alarms search query: Both parameters 'searchStatus' " +
+                    "and 'status' can't be specified at the same time!", ThingsboardErrorCode.BAD_REQUEST_PARAMS);
+        }
+        TimePageLink pageLink = createTimePageLink(pageSize, page, textSearch, sortProperty, sortOrder, startTime, endTime);
+
+        try {
+            if (getCurrentUser().isCustomerUser()) {
+                return checkNotNull(alarmService.findCustomerAlarms(getCurrentUser().getTenantId(), getCurrentUser().getCustomerId(), new AlarmQuery(null, pageLink, alarmSearchStatus, alarmStatus, fetchOriginator)).get());
+            } else {
+                return checkNotNull(alarmService.findAlarms(getCurrentUser().getTenantId(), new AlarmQuery(null, pageLink, alarmSearchStatus, alarmStatus, fetchOriginator)).get());
+            }
         } catch (Exception e) {
             throw handleException(e);
         }

@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,7 +48,7 @@ public abstract class TbAbstractCustomerActionNode<C extends TbAbstractCustomerA
     @Override
     public void init(TbContext ctx, TbNodeConfiguration configuration) throws TbNodeException {
         this.config = loadCustomerNodeActionConfig(configuration);
-        CacheBuilder cacheBuilder = CacheBuilder.newBuilder();
+        CacheBuilder<Object, Object> cacheBuilder = CacheBuilder.newBuilder();
         if (this.config.getCustomerCacheExpiration() > 0) {
             cacheBuilder.expireAfterWrite(this.config.getCustomerCacheExpiration(), TimeUnit.SECONDS);
         }
@@ -63,7 +63,7 @@ public abstract class TbAbstractCustomerActionNode<C extends TbAbstractCustomerA
     @Override
     public void onMsg(TbContext ctx, TbMsg msg) {
         withCallback(processCustomerAction(ctx, msg),
-                m -> ctx.tellNext(msg, "Success"),
+                m -> ctx.tellSuccess(msg),
                 t -> ctx.tellFailure(msg, t), ctx.getDbCallbackExecutor());
     }
 
@@ -79,7 +79,7 @@ public abstract class TbAbstractCustomerActionNode<C extends TbAbstractCustomerA
     protected abstract void doProcessCustomerAction(TbContext ctx, TbMsg msg, CustomerId customerId);
 
     protected ListenableFuture<CustomerId> getCustomer(TbContext ctx, TbMsg msg) {
-        String customerTitle = TbNodeUtils.processPattern(this.config.getCustomerNamePattern(), msg.getMetaData());
+        String customerTitle = TbNodeUtils.processPattern(this.config.getCustomerNamePattern(), msg);
         CustomerKey key = new CustomerKey(customerTitle);
         return ctx.getDbCallbackExecutor().executeAsync(() -> {
             Optional<CustomerId> customerId = customerIdCache.get(key);
@@ -122,7 +122,9 @@ public abstract class TbAbstractCustomerActionNode<C extends TbAbstractCustomerA
                 newCustomer.setTitle(key.getCustomerTitle());
                 newCustomer.setTenantId(ctx.getTenantId());
                 Customer savedCustomer = service.saveCustomer(newCustomer);
-                ctx.sendTbMsgToRuleEngine(ctx.customerCreatedMsg(savedCustomer, ctx.getSelfId()));
+                ctx.enqueue(ctx.customerCreatedMsg(savedCustomer, ctx.getSelfId()),
+                        () -> log.trace("Pushed Customer Created message: {}", savedCustomer),
+                        throwable -> log.warn("Failed to push Customer Created message: {}", savedCustomer, throwable));
                 return Optional.of(savedCustomer.getId());
             }
             return Optional.empty();

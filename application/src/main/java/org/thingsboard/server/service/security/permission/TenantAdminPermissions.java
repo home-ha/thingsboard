@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,12 +19,9 @@ import org.springframework.stereotype.Component;
 import org.thingsboard.server.common.data.HasTenantId;
 import org.thingsboard.server.common.data.User;
 import org.thingsboard.server.common.data.id.EntityId;
-import org.thingsboard.server.common.data.id.TenantId;
 import org.thingsboard.server.common.data.id.UserId;
 import org.thingsboard.server.common.data.security.Authority;
 import org.thingsboard.server.service.security.model.SecurityUser;
-
-import java.util.HashMap;
 
 @Component(value="tenantAdminPermissions")
 public class TenantAdminPermissions extends AbstractPermissions {
@@ -42,6 +39,12 @@ public class TenantAdminPermissions extends AbstractPermissions {
         put(Resource.USER, userPermissionChecker);
         put(Resource.WIDGETS_BUNDLE, widgetsPermissionChecker);
         put(Resource.WIDGET_TYPE, widgetsPermissionChecker);
+        put(Resource.DEVICE_PROFILE, tenantEntityPermissionChecker);
+        put(Resource.API_USAGE_STATE, tenantEntityPermissionChecker);
+        put(Resource.TB_RESOURCE, tbResourcePermissionChecker);
+        put(Resource.OTA_PACKAGE, tenantEntityPermissionChecker);
+        put(Resource.EDGE, tenantEntityPermissionChecker);
+        put(Resource.RPC, tenantEntityPermissionChecker);
     }
 
     public static final PermissionChecker tenantEntityPermissionChecker = new PermissionChecker() {
@@ -60,6 +63,7 @@ public class TenantAdminPermissions extends AbstractPermissions {
             new PermissionChecker.GenericPermissionChecker(Operation.READ, Operation.READ_ATTRIBUTES, Operation.READ_TELEMETRY) {
 
                 @Override
+                @SuppressWarnings("unchecked")
                 public boolean hasPermission(SecurityUser user, Operation operation, EntityId entityId, HasTenantId entity) {
                     if (!super.hasPermission(user, operation, entityId, entity)) {
                         return false;
@@ -76,7 +80,7 @@ public class TenantAdminPermissions extends AbstractPermissions {
 
         @Override
         public boolean hasPermission(SecurityUser user, Operation operation, UserId userId, User userEntity) {
-            if (userEntity.getAuthority() == Authority.SYS_ADMIN) {
+            if (Authority.SYS_ADMIN.equals(userEntity.getAuthority())) {
                 return false;
             }
             if (!user.getTenantId().equals(userEntity.getTenantId())) {
@@ -88,6 +92,21 @@ public class TenantAdminPermissions extends AbstractPermissions {
     };
 
     private static final PermissionChecker widgetsPermissionChecker = new PermissionChecker() {
+
+        @Override
+        public boolean hasPermission(SecurityUser user, Operation operation, EntityId entityId, HasTenantId entity) {
+            if (entity.getTenantId() == null || entity.getTenantId().isNullUid()) {
+                return operation == Operation.READ;
+            }
+            if (!user.getTenantId().equals(entity.getTenantId())) {
+                return false;
+            }
+            return true;
+        }
+
+    };
+
+    private static final PermissionChecker tbResourcePermissionChecker = new PermissionChecker() {
 
         @Override
         public boolean hasPermission(SecurityUser user, Operation operation, EntityId entityId, HasTenantId entity) {

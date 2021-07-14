@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,5 +34,6 @@ public class ToDeviceRpcRequest implements Serializable {
     private final boolean oneway;
     private final long expirationTime;
     private final ToDeviceRpcRequestBody body;
+    private final boolean persisted;
 }
 

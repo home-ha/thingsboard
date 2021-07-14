@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,15 +17,15 @@ package org.thingsboard.server.dao.sql.device;
 
 import org.springframework.data.repository.CrudRepository;
 import org.thingsboard.server.dao.model.sql.DeviceCredentialsEntity;
-import org.thingsboard.server.dao.util.SqlDao;
+
+import java.util.UUID;
 
 /**
  * Created by Valerii Sosliuk on 5/6/2017.
  */
-@SqlDao
-public interface DeviceCredentialsRepository extends CrudRepository<DeviceCredentialsEntity, String> {
+public interface DeviceCredentialsRepository extends CrudRepository<DeviceCredentialsEntity, UUID> {
 
-    DeviceCredentialsEntity findByDeviceId(String deviceId);
+    DeviceCredentialsEntity findByDeviceId(UUID deviceId);
 
     DeviceCredentialsEntity findByCredentialsId(String credentialsId);
 }

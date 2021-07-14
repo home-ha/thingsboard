@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,13 @@
 package org.thingsboard.rule.engine.filter;
 
 import lombok.extern.slf4j.Slf4j;
+import org.thingsboard.rule.engine.api.EmptyNodeConfiguration;
+import org.thingsboard.rule.engine.api.RuleNode;
+import org.thingsboard.rule.engine.api.TbContext;
+import org.thingsboard.rule.engine.api.TbNode;
+import org.thingsboard.rule.engine.api.TbNodeConfiguration;
+import org.thingsboard.rule.engine.api.TbNodeException;
 import org.thingsboard.rule.engine.api.util.TbNodeUtils;
-import org.thingsboard.rule.engine.api.*;
 import org.thingsboard.server.common.data.EntityType;
 import org.thingsboard.server.common.data.plugin.ComponentType;
 import org.thingsboard.server.common.msg.TbMsg;
@@ -27,7 +32,7 @@ import org.thingsboard.server.common.msg.TbMsg;
         type = ComponentType.FILTER,
         name = "originator type switch",
         configClazz = EmptyNodeConfiguration.class,
-        relationTypes = {"Device", "Asset", "Entity View", "Tenant", "Customer", "User", "Dashboard", "Rule chain", "Rule node"},
+        relationTypes = {"Device", "Asset", "Alarm", "Entity View", "Tenant", "Customer", "User", "Dashboard", "Rule chain", "Rule node"},
         nodeDescription = "Route incoming messages by Message Originator Type",
         nodeDetails = "Routes messages to chain according to the originator type ('Device', 'Asset', etc.).",
         uiResources = {"static/rulenode/rulenode-core-config.js"},
@@ -67,11 +72,17 @@ public class TbOriginatorTypeSwitchNode implements TbNode {
             case ENTITY_VIEW:
                 relationType = "Entity View";
                 break;
+            case EDGE:
+                relationType = "Edge";
+                break;
             case RULE_CHAIN:
                 relationType = "Rule chain";
                 break;
             case RULE_NODE:
                 relationType = "Rule node";
+                break;
+            case ALARM:
+                relationType = "Alarm";
                 break;
             default:
                 throw new TbNodeException("Unsupported originator type: " + originatorType);

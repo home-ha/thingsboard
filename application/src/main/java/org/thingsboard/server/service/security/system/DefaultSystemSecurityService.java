@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,8 @@
  */
 package org.thingsboard.server.service.security.system;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -40,17 +40,21 @@ import org.thingsboard.rule.engine.api.MailService;
 import org.thingsboard.server.common.data.AdminSettings;
 import org.thingsboard.server.common.data.User;
 import org.thingsboard.server.common.data.exception.ThingsboardException;
+import org.thingsboard.server.common.data.id.CustomerId;
 import org.thingsboard.server.common.data.id.TenantId;
 import org.thingsboard.server.common.data.security.UserCredentials;
+import org.thingsboard.server.common.data.security.model.SecuritySettings;
+import org.thingsboard.server.common.data.security.model.UserPasswordPolicy;
 import org.thingsboard.server.dao.exception.DataValidationException;
 import org.thingsboard.server.dao.settings.AdminSettingsService;
 import org.thingsboard.server.dao.user.UserService;
 import org.thingsboard.server.dao.user.UserServiceImpl;
+import org.thingsboard.common.util.JacksonUtil;
 import org.thingsboard.server.service.security.exception.UserPasswordExpiredException;
-import org.thingsboard.server.common.data.security.model.SecuritySettings;
-import org.thingsboard.server.common.data.security.model.UserPasswordPolicy;
+import org.thingsboard.server.utils.MiscUtils;
 
 import javax.annotation.Resource;
+import javax.servlet.http.HttpServletRequest;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -61,8 +65,6 @@ import static org.thingsboard.server.common.data.CacheConstants.SECURITY_SETTING
 @Service
 @Slf4j
 public class DefaultSystemSecurityService implements SystemSecurityService {
-
-    private static final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired
     private AdminSettingsService adminSettingsService;
@@ -86,7 +88,7 @@ public class DefaultSystemSecurityService implements SystemSecurityService {
         AdminSettings adminSettings = adminSettingsService.findAdminSettingsByKey(tenantId, "securitySettings");
         if (adminSettings != null) {
             try {
-                securitySettings = objectMapper.treeToValue(adminSettings.getJsonValue(), SecuritySettings.class);
+                securitySettings = JacksonUtil.convertValue(adminSettings.getJsonValue(), SecuritySettings.class);
             } catch (Exception e) {
                 throw new RuntimeException("Failed to load security settings!", e);
             }
@@ -106,10 +108,10 @@ public class DefaultSystemSecurityService implements SystemSecurityService {
             adminSettings = new AdminSettings();
             adminSettings.setKey("securitySettings");
         }
-        adminSettings.setJsonValue(objectMapper.valueToTree(securitySettings));
+        adminSettings.setJsonValue(JacksonUtil.valueToTree(securitySettings));
         AdminSettings savedAdminSettings = adminSettingsService.saveAdminSettings(tenantId, adminSettings);
         try {
-            return objectMapper.treeToValue(savedAdminSettings.getJsonValue(), SecuritySettings.class);
+            return JacksonUtil.convertValue(savedAdminSettings.getJsonValue(), SecuritySettings.class);
         } catch (Exception e) {
             throw new RuntimeException("Failed to load security settings!", e);
         }
@@ -146,7 +148,7 @@ public class DefaultSystemSecurityService implements SystemSecurityService {
         if (isPositiveInteger(securitySettings.getPasswordPolicy().getPasswordExpirationPeriodDays())) {
             if ((userCredentials.getCreatedTime()
                     + TimeUnit.DAYS.toMillis(securitySettings.getPasswordPolicy().getPasswordExpirationPeriodDays()))
-                < System.currentTimeMillis()) {
+                    < System.currentTimeMillis()) {
                 userCredentials = userService.requestExpiredPasswordReset(tenantId, userCredentials.getId());
                 throw new UserPasswordExpiredException("User password expired!", userCredentials.getResetToken());
             }
@@ -186,7 +188,7 @@ public class DefaultSystemSecurityService implements SystemSecurityService {
             JsonNode additionalInfo = user.getAdditionalInfo();
             if (additionalInfo instanceof ObjectNode && additionalInfo.has(UserServiceImpl.USER_PASSWORD_HISTORY)) {
                 JsonNode userPasswordHistoryJson = additionalInfo.get(UserServiceImpl.USER_PASSWORD_HISTORY);
-                Map<String, String> userPasswordHistoryMap = objectMapper.convertValue(userPasswordHistoryJson, Map.class);
+                Map<String, String> userPasswordHistoryMap = JacksonUtil.convertValue(userPasswordHistoryJson, new TypeReference<>() {});
                 for (Map.Entry<String, String> entry : userPasswordHistoryMap.entrySet()) {
                     if (encoder.matches(password, entry.getValue()) && Long.parseLong(entry.getKey()) > passwordReuseFrequencyTs) {
                         throw new DataValidationException("Password was already used for the last " + passwordPolicy.getPasswordReuseFrequencyDays() + " days");
@@ -195,6 +197,24 @@ public class DefaultSystemSecurityService implements SystemSecurityService {
 
             }
         }
+    }
+
+    @Override
+    public String getBaseUrl(TenantId tenantId, CustomerId customerId, HttpServletRequest httpServletRequest) {
+        String baseUrl = null;
+        AdminSettings generalSettings = adminSettingsService.findAdminSettingsByKey(TenantId.SYS_TENANT_ID, "general");
+
+        JsonNode prohibitDifferentUrl = generalSettings.getJsonValue().get("prohibitDifferentUrl");
+
+        if (prohibitDifferentUrl != null && prohibitDifferentUrl.asBoolean()) {
+            baseUrl = generalSettings.getJsonValue().get("baseUrl").asText();
+        }
+
+        if (StringUtils.isEmpty(baseUrl)) {
+            baseUrl = MiscUtils.constructBaseUrl(httpServletRequest);
+        }
+
+        return baseUrl;
     }
 
     private static boolean isPositiveInteger(Integer val) {

@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2019 The Thingsboard Authors
+ * Copyright © 2016-2021 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.util.concurrent.FutureCallback;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -28,54 +29,62 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.context.request.async.DeferredResult;
-import org.thingsboard.common.util.ThingsBoardThreadFactory;
 import org.thingsboard.rule.engine.api.RpcError;
+import org.thingsboard.server.common.data.DataConstants;
 import org.thingsboard.server.common.data.audit.ActionType;
 import org.thingsboard.server.common.data.exception.ThingsboardErrorCode;
 import org.thingsboard.server.common.data.exception.ThingsboardException;
 import org.thingsboard.server.common.data.id.DeviceId;
 import org.thingsboard.server.common.data.id.EntityId;
+import org.thingsboard.server.common.data.id.RpcId;
 import org.thingsboard.server.common.data.id.TenantId;
 import org.thingsboard.server.common.data.id.UUIDBased;
-import org.thingsboard.server.common.data.rpc.RpcRequest;
+import org.thingsboard.server.common.data.page.PageData;
+import org.thingsboard.server.common.data.page.PageLink;
+import org.thingsboard.server.common.data.rpc.Rpc;
+import org.thingsboard.server.common.data.rpc.RpcStatus;
 import org.thingsboard.server.common.data.rpc.ToDeviceRpcRequestBody;
 import org.thingsboard.server.common.msg.rpc.ToDeviceRpcRequest;
-import org.thingsboard.server.service.rpc.DeviceRpcService;
+import org.thingsboard.server.queue.util.TbCoreComponent;
 import org.thingsboard.server.service.rpc.FromDeviceRpcResponse;
 import org.thingsboard.server.service.rpc.LocalRequestMetaData;
+import org.thingsboard.server.service.rpc.TbCoreDeviceRpcService;
 import org.thingsboard.server.service.security.AccessValidator;
 import org.thingsboard.server.service.security.model.SecurityUser;
 import org.thingsboard.server.service.security.permission.Operation;
 import org.thingsboard.server.service.telemetry.exception.ToErrorResponseEntity;
 
 import javax.annotation.Nullable;
-import javax.annotation.PostConstruct;
-import javax.annotation.PreDestroy;
 import java.io.IOException;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 /**
  * Created by ashvayka on 22.03.18.
  */
 @RestController
+@TbCoreComponent
 @RequestMapping(TbUrlConstants.RPC_URL_PREFIX)
 @Slf4j
 public class RpcController extends BaseController {
 
-    public static final int DEFAULT_TIMEOUT = 10000;
     protected final ObjectMapper jsonMapper = new ObjectMapper();
 
     @Autowired
-    private DeviceRpcService deviceRpcService;
+    private TbCoreDeviceRpcService deviceRpcService;
 
     @Autowired
     private AccessValidator accessValidator;
+
+    @Value("${server.rest.server_side_rpc.min_timeout:5000}")
+    private long minTimeout;
+
+    @Value("${server.rest.server_side_rpc.default_timeout:10000}")
+    private long defaultTimeout;
 
     @PreAuthorize("hasAnyAuthority('SYS_ADMIN', 'TENANT_ADMIN', 'CUSTOMER_USER')")
     @RequestMapping(value = "/oneway/{deviceId}", method = RequestMethod.POST)
@@ -91,32 +100,75 @@ public class RpcController extends BaseController {
         return handleDeviceRPCRequest(false, new DeviceId(UUID.fromString(deviceIdStr)), requestBody);
     }
 
+    @PreAuthorize("hasAnyAuthority('TENANT_ADMIN', 'CUSTOMER_USER')")
+    @RequestMapping(value = "/persistent/{rpcId}", method = RequestMethod.GET)
+    @ResponseBody
+    public Rpc getPersistedRpc(@PathVariable("rpcId") String strRpc) throws ThingsboardException {
+        checkParameter("RpcId", strRpc);
+        try {
+            RpcId rpcId = new RpcId(UUID.fromString(strRpc));
+            return checkRpcId(rpcId, Operation.READ);
+        } catch (Exception e) {
+            throw handleException(e);
+        }
+    }
+
+    @PreAuthorize("hasAnyAuthority('TENANT_ADMIN', 'CUSTOMER_USER')")
+    @RequestMapping(value = "/persistent/device/{deviceId}", method = RequestMethod.GET)
+    @ResponseBody
+    public PageData<Rpc> getPersistedRpcByDevice(@PathVariable("deviceId") String strDeviceId,
+                                                 @RequestParam int pageSize,
+                                                 @RequestParam int page,
+                                                 @RequestParam RpcStatus rpcStatus,
+                                                 @RequestParam(required = false) String textSearch,
+                                                 @RequestParam(required = false) String sortProperty,
+                                                 @RequestParam(required = false) String sortOrder) throws ThingsboardException {
+        checkParameter("DeviceId", strDeviceId);
+        try {
+            TenantId tenantId = getCurrentUser().getTenantId();
+            PageLink pageLink = createPageLink(pageSize, page, textSearch, sortProperty, sortOrder);
+            DeviceId deviceId = new DeviceId(UUID.fromString(strDeviceId));
+            return checkNotNull(rpcService.findAllByDeviceIdAndStatus(tenantId, deviceId, rpcStatus, pageLink));
+        } catch (Exception e) {
+            throw handleException(e);
+        }
+    }
+
+    @PreAuthorize("hasAnyAuthority('TENANT_ADMIN')")
+    @RequestMapping(value = "/persistent/{rpcId}", method = RequestMethod.DELETE)
+    @ResponseBody
+    public void deleteResource(@PathVariable("rpcId") String strRpc) throws ThingsboardException {
+        checkParameter("RpcId", strRpc);
+        try {
+            rpcService.deleteRpc(getTenantId(), new RpcId(UUID.fromString(strRpc)));
+        } catch (Exception e) {
+            throw handleException(e);
+        }
+    }
 
     private DeferredResult<ResponseEntity> handleDeviceRPCRequest(boolean oneWay, DeviceId deviceId, String requestBody) throws ThingsboardException {
         try {
             JsonNode rpcRequestBody = jsonMapper.readTree(requestBody);
-            RpcRequest cmd = new RpcRequest(rpcRequestBody.get("method").asText(),
-                    jsonMapper.writeValueAsString(rpcRequestBody.get("params")));
-
-            if (rpcRequestBody.has("timeout")) {
-                cmd.setTimeout(rpcRequestBody.get("timeout").asLong());
-            }
+            ToDeviceRpcRequestBody body = new ToDeviceRpcRequestBody(rpcRequestBody.get("method").asText(), jsonMapper.writeValueAsString(rpcRequestBody.get("params")));
             SecurityUser currentUser = getCurrentUser();
             TenantId tenantId = currentUser.getTenantId();
             final DeferredResult<ResponseEntity> response = new DeferredResult<>();
-            long timeout = System.currentTimeMillis() + (cmd.getTimeout() != null ? cmd.getTimeout() : DEFAULT_TIMEOUT);
-            ToDeviceRpcRequestBody body = new ToDeviceRpcRequestBody(cmd.getMethodName(), cmd.getRequestData());
+            long timeout = rpcRequestBody.has("timeout") ? rpcRequestBody.get("timeout").asLong() : defaultTimeout;
+            long expTime = System.currentTimeMillis() + Math.max(minTimeout, timeout);
+            UUID rpcRequestUUID = rpcRequestBody.has("requestUUID") ? UUID.fromString(rpcRequestBody.get("requestUUID").asText()) : UUID.randomUUID();
+            boolean persisted = rpcRequestBody.has(DataConstants.PERSISTENT) && rpcRequestBody.get(DataConstants.PERSISTENT).asBoolean();
             accessValidator.validate(currentUser, Operation.RPC_CALL, deviceId, new HttpValidationCallback(response, new FutureCallback<DeferredResult<ResponseEntity>>() {
                 @Override
                 public void onSuccess(@Nullable DeferredResult<ResponseEntity> result) {
-                    ToDeviceRpcRequest rpcRequest = new ToDeviceRpcRequest(UUID.randomUUID(),
+                    ToDeviceRpcRequest rpcRequest = new ToDeviceRpcRequest(rpcRequestUUID,
                             tenantId,
                             deviceId,
                             oneWay,
-                            timeout,
-                            body
+                            expTime,
+                            body,
+                            persisted
                     );
-                    deviceRpcService.processRestAPIRpcRequestToRuleEngine(rpcRequest, fromDeviceRpcResponse -> reply(new LocalRequestMetaData(rpcRequest, currentUser, result), fromDeviceRpcResponse));
+                    deviceRpcService.processRestApiRpcRequest(rpcRequest, fromDeviceRpcResponse -> reply(new LocalRequestMetaData(rpcRequest, currentUser, result), fromDeviceRpcResponse), currentUser);
                 }
 
                 @Override
